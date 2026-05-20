@@ -14,3 +14,6 @@ __pycache__/
 *.log
 .pytest_cache/
 
+# Local Copilot/Claude workspace settings
+.claude/
+
