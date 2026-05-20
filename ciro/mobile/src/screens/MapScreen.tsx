@@ -4,7 +4,6 @@ import {
     SafeAreaView, Dimensions, Platform, Alert, Animated, ActivityIndicator
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
-import { WebView } from "react-native-webview";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { collection, query, orderBy, onSnapshot } from "firebase/firestore";
@@ -53,7 +52,6 @@ export default function MapScreen({ navigation }: any) {
     const [loading, setLoading] = useState(true);
     const [selectedFilter, setSelectedFilter] = useState<string>("all");
     const [selectedItem, setSelectedItem] = useState<any | null>(null);
-    const [mapHtml, setMapHtml] = useState<string>("");
 
     const slideAnim = useRef(new Animated.Value(250)).current;
 
@@ -79,138 +77,6 @@ export default function MapScreen({ navigation }: any) {
         return icons[type?.toLowerCase()] || "⚠️";
     };
 
-    const getCoordinates = (item: any) => {
-        if (item.coordinates && typeof item.coordinates.latitude === "number") {
-            return { latitude: item.coordinates.latitude, longitude: item.coordinates.longitude };
-        }
-        if (item.lat && item.lng) {
-            return { latitude: Number(item.lat), longitude: Number(item.lng) };
-        }
-
-        const sitReport = item.agent_outputs?.situation_report || "";
-        const polyMatch = sitReport.match(/__POLYGON__:\s*(\[[\s\S]*?\])/);
-        if (polyMatch) {
-            try {
-                const poly = JSON.parse(polyMatch[1]);
-                if (poly && poly.length > 0) {
-                    return { latitude: poly[0].latitude, longitude: poly[0].longitude };
-                }
-            } catch {}
-        }
-
-        const loc = item.location || item.title || item.traffic_location || item.weather_location || "";
-        for (const [key, val] of Object.entries(GEO_LOOKUP)) {
-            if (loc.toLowerCase().includes(key.toLowerCase())) {
-                return { latitude: val.lat, longitude: val.lng };
-            }
-        }
-        return { latitude: 33.6844, longitude: 73.0479 };
-    };
-
-    // Generate Leaflet HTML map
-    const generateMapHtml = (crisisData: any[], reportData: any[]) => {
-        const filteredCrises = selectedFilter === "all" || selectedFilter === "reports"
-            ? crisisData
-            : crisisData.filter(c => c.type?.toLowerCase() === selectedFilter);
-
-        const crisisMarkers = filteredCrises.map(c => {
-            const coords = getCoordinates(c);
-            const color = SEVERITY_COLORS[c.severity] || COLORS.danger;
-            const emoji = getCrisisEmoji(c.type);
-            return {
-                lat: coords.latitude,
-                lng: coords.longitude,
-                title: c.title || "Crisis",
-                severity: c.severity,
-                type: c.type,
-                color: color,
-                emoji: emoji,
-                id: c.id,
-            };
-        });
-
-        const reportMarkers = (selectedFilter === "all" || selectedFilter === "reports") && reportData.length > 0
-            ? reportData.map(r => {
-                const coords = getCoordinates(r);
-                return {
-                    lat: coords.latitude,
-                    lng: coords.longitude,
-                    title: `Report: ${r.traffic_location || r.weather_location || "Unknown"}`,
-                    status: r.status,
-                    id: r.id,
-                    isReport: true,
-                };
-            })
-            : [];
-
-        const allMarkers = [...crisisMarkers, ...reportMarkers];
-        const centerLat = allMarkers.length > 0
-            ? allMarkers.reduce((sum, m) => sum + m.lat, 0) / allMarkers.length
-            : 30.3753;
-        const centerLng = allMarkers.length > 0
-            ? allMarkers.reduce((sum, m) => sum + m.lng, 0) / allMarkers.length
-            : 69.3451;
-
-        const crisisMarkersHtml = crisisMarkers.map(m => `
-            <script>
-                const marker = L.circleMarker([${m.lat}, ${m.lng}], {
-                    radius: 12,
-                    fillColor: '${m.color}',
-                    color: '${m.color}',
-                    weight: 2,
-                    opacity: 1,
-                    fillOpacity: 0.8
-                }).bindPopup('<div style="font-size: 12px; color: #f1f5f9;"><strong>${m.emoji} ${m.title}</strong><br/>Severity: ${m.severity}<br/>Type: ${m.type}</div>').addTo(map);
-                marker.on('click', () => window.ReactNativeWebView.postMessage(JSON.stringify({type: 'marker', id: '${m.id}', severity: '${m.severity}'})));
-            </script>
-        `).join('');
-
-        const reportMarkersHtml = reportMarkers.map(m => `
-            <script>
-                const reportMarker = L.circleMarker([${m.lat}, ${m.lng}], {
-                    radius: 8,
-                    fillColor: '#30D158',
-                    color: '#30D158',
-                    weight: 1.5,
-                    opacity: 1,
-                    fillOpacity: 0.6
-                }).bindPopup('<div style="font-size: 12px; color: #f1f5f9;"><strong>👥 ${m.title}</strong><br/>Status: ${m.status || "Pending"}</div>').addTo(map);
-            </script>
-        `).join('');
-
-        return `
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="utf-8" />
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
-                <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-                <style>
-                    * { margin: 0; padding: 0; }
-                    html, body { height: 100%; width: 100%; background: #080E1E; }
-                    #map { height: 100%; width: 100%; }
-                    .leaflet-popup-content { background: #0F172A !important; color: #F1F5F9 !important; border: 1px solid #1E293B !important; }
-                    .leaflet-popup { font-family: system-ui, -apple-system, sans-serif; }
-                </style>
-            </head>
-            <body>
-                <div id="map"></div>
-                <script>
-                    const map = L.map('map').setView([${centerLat}, ${centerLng}], 6);
-                    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                        attribution: '© OpenStreetMap contributors',
-                        maxZoom: 19,
-                        darkMode: true
-                    }).addTo(map);
-                    ${crisisMarkersHtml}
-                    ${reportMarkersHtml}
-                </script>
-            </body>
-            </html>
-        `;
-    };
-
     // Load active crises and reports
     useEffect(() => {
         const fetchCrises = async () => {
@@ -225,6 +91,7 @@ export default function MapScreen({ navigation }: any) {
                     throw new Error("Empty list");
                 }
             } catch {
+                // Fallback demo data
                 setCrises([
                     { id: "crisis-1", title: "Flash Flood — G-10 Islamabad", type: "flood", severity: "CRITICAL", location: "G-10, Islamabad", affected_population: 4500, status: "active" },
                     { id: "crisis-2", title: "Heat Emergency — Karachi", type: "heat", severity: "HIGH", location: "Saddar, Karachi", affected_population: 8200, status: "active" },
@@ -236,6 +103,7 @@ export default function MapScreen({ navigation }: any) {
         };
 
         fetchCrises();
+        const interval = setInterval(fetchCrises, 7000);
 
         const reportsQuery = query(collection(db, "reports"), orderBy("createdAt", "desc"));
         const unsubscribeReports = onSnapshot(reportsQuery, (snapshot) => {
@@ -247,25 +115,42 @@ export default function MapScreen({ navigation }: any) {
         });
 
         return () => {
+            clearInterval(interval);
             unsubscribeReports();
         };
     }, []);
 
-    // Update map when data or filter changes
+    // Bottom drawer animation
     useEffect(() => {
-        setMapHtml(generateMapHtml(crises, reports));
-    }, [crises, reports, selectedFilter]);
+        if (selectedItem) {
+            Animated.spring(slideAnim, {
+                toValue: 0,
+                useNativeDriver: true,
+                friction: 8,
+                tension: 40
+            }).start();
+        } else {
+            Animated.timing(slideAnim, {
+                toValue: 250,
+                duration: 200,
+                useNativeDriver: true
+            }).start();
+        }
+    }, [selectedItem]);
 
     const handleMarkerPress = (item: any) => {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
         setSelectedItem(item);
     };
 
+    // Filter logic
     const filteredCrises = crises.filter(c => {
         if (selectedFilter === "all") return true;
         if (selectedFilter === "reports") return false;
         return c.type?.toLowerCase() === selectedFilter;
     });
+
+    const showCitizenReports = selectedFilter === "reports" || selectedFilter === "all";
 
     return (
         <View style={styles.container}>
@@ -274,25 +159,137 @@ export default function MapScreen({ navigation }: any) {
             {loading ? (
                 <View style={styles.loadingContainer}>
                     <ActivityIndicator size="large" color={COLORS.primary} />
-                    <Text style={styles.loadingText}>Loading Crisis Intelligence Map...</Text>
+                    <Text style={styles.loadingText}>Loading Crisis Intelligence...</Text>
                 </View>
             ) : (
                 <>
-                    <WebView
-                        source={{ html: mapHtml }}
-                        style={{ flex: 1 }}
-                        onMessage={(event) => {
-                            try {
-                                const msg = JSON.parse(event.nativeEvent.data);
-                                if (msg.type === 'marker') {
-                                    const crisis = crises.find(c => c.id === msg.id);
-                                    if (crisis) handleMarkerPress(crisis);
-                                }
-                            } catch (e) {
-                                console.error("WebView message parse error:", e);
-                            }
-                        }}
-                    />
+                    {/* Scrollable Crisis List */}
+                    <ScrollView
+                        style={{ flex: 1, paddingTop: 120 }}
+                        contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
+                        scrollEnabled={true}
+                    >
+                        {/* Crises List */}
+                        {selectedFilter !== "reports" && filteredCrises.length > 0 && (
+                            <>
+                                <Text style={{ color: COLORS.textPrimary, fontSize: 16, fontWeight: "800", marginBottom: 12 }}>
+                                    🗺️ Active Crises ({filteredCrises.length})
+                                </Text>
+                                {filteredCrises.map((c) => {
+                                    const color = SEVERITY_COLORS[c.severity] || COLORS.danger;
+                                    return (
+                                        <TouchableOpacity
+                                            key={c.id}
+                                            style={{
+                                                backgroundColor: COLORS.surface,
+                                                borderLeftWidth: 4,
+                                                borderLeftColor: color,
+                                                borderRadius: 12,
+                                                padding: 14,
+                                                marginBottom: 12,
+                                            }}
+                                            onPress={() => handleMarkerPress(c)}
+                                            activeOpacity={0.7}
+                                        >
+                                            <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 12 }}>
+                                                <Text style={{ fontSize: 28 }}>{getCrisisEmoji(c.type)}</Text>
+                                                <View style={{ flex: 1 }}>
+                                                    <Text style={{ color: COLORS.textPrimary, fontWeight: "800", fontSize: 14 }}>
+                                                        {c.title}
+                                                    </Text>
+                                                    <View style={{ flexDirection: "row", alignItems: "center", gap: 4, marginTop: 6 }}>
+                                                        <Ionicons name="location-outline" size={12} color={COLORS.textSecondary} />
+                                                        <Text style={{ color: COLORS.textSecondary, fontSize: 12 }}>
+                                                            {c.location}
+                                                        </Text>
+                                                    </View>
+                                                    <View style={{ flexDirection: "row", gap: 12, marginTop: 8 }}>
+                                                        <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+                                                            <Ionicons name="people-outline" size={11} color={COLORS.textSecondary} />
+                                                            <Text style={{ color: COLORS.textSecondary, fontSize: 11 }}>
+                                                                {c.affected_population?.toLocaleString() || "Unknown"} affected
+                                                            </Text>
+                                                        </View>
+                                                        <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+                                                            <Ionicons name="time-outline" size={11} color={COLORS.textSecondary} />
+                                                            <Text style={{ color: COLORS.textSecondary, fontSize: 11 }}>
+                                                                Active
+                                                            </Text>
+                                                        </View>
+                                                    </View>
+                                                </View>
+                                                <View style={{ backgroundColor: color + "22", paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: color + "44" }}>
+                                                    <Text style={{ color, fontSize: 11, fontWeight: "800" }}>{c.severity}</Text>
+                                                </View>
+                                            </View>
+                                        </TouchableOpacity>
+                                    );
+                                })}
+                            </>
+                        )}
+
+                        {selectedFilter !== "reports" && filteredCrises.length === 0 && (
+                            <View style={{ alignItems: "center", marginTop: 40 }}>
+                                <Text style={{ color: COLORS.textSecondary, fontSize: 14 }}>
+                                    No crises in this category
+                                </Text>
+                            </View>
+                        )}
+
+                        {/* Citizen Reports List */}
+                        {showCitizenReports && reports.length > 0 && (
+                            <>
+                                <Text style={{ color: COLORS.textPrimary, fontSize: 16, fontWeight: "800", marginBottom: 12, marginTop: 24 }}>
+                                    👥 Citizen Reports ({reports.length})
+                                </Text>
+                                {reports.map((r) => {
+                                    const isVerified = r.status === "dispatched" || r.status === "processing";
+                                    const statusColor = isVerified ? COLORS.low : r.status === "pending" ? COLORS.warning : COLORS.danger;
+                                    return (
+                                        <TouchableOpacity
+                                            key={r.id}
+                                            style={{
+                                                backgroundColor: COLORS.surface,
+                                                borderLeftWidth: 4,
+                                                borderLeftColor: statusColor,
+                                                borderRadius: 12,
+                                                padding: 14,
+                                                marginBottom: 12,
+                                            }}
+                                            onPress={() => handleMarkerPress(r)}
+                                            activeOpacity={0.7}
+                                        >
+                                            <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+                                                <Ionicons name="people" size={24} color={statusColor} />
+                                                <View style={{ flex: 1 }}>
+                                                    <Text style={{ color: COLORS.textPrimary, fontWeight: "800", fontSize: 14 }}>
+                                                        {r.traffic_location || r.weather_location || "Unknown Location"}
+                                                    </Text>
+                                                    <Text style={{ color: COLORS.textSecondary, fontSize: 12, marginTop: 4 }}>
+                                                        Status: {(r.status || "pending").toUpperCase()}
+                                                    </Text>
+                                                </View>
+                                                <View style={{ backgroundColor: statusColor + "22", paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 }}>
+                                                    <Text style={{ color: statusColor, fontSize: 11, fontWeight: "800" }}>
+                                                        {isVerified ? "✓ Verified" : "⏳ Pending"}
+                                                    </Text>
+                                                </View>
+                                            </View>
+                                        </TouchableOpacity>
+                                    );
+                                })}
+                            </>
+                        )}
+
+                        {showCitizenReports && reports.length === 0 && filteredCrises.length === 0 && (
+                            <View style={{ alignItems: "center", marginTop: 40 }}>
+                                <Ionicons name="shield-checkmark-outline" size={48} color={COLORS.low + "33"} />
+                                <Text style={{ color: COLORS.textSecondary, fontSize: 14, marginTop: 12 }}>
+                                    No reports yet. All clear! ✅
+                                </Text>
+                            </View>
+                        )}
+                    </ScrollView>
 
                     {/* Float HUD Header */}
                     <SafeAreaView style={styles.headerSafeArea}>
@@ -325,7 +322,6 @@ export default function MapScreen({ navigation }: any) {
                                             style={[
                                                 styles.filterChip,
                                                 isSelected && styles.filterChipActive,
-                                                f.key === "reports" && isSelected && { borderColor: COLORS.low }
                                             ]}
                                             onPress={() => {
                                                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -450,6 +446,7 @@ const styles = StyleSheet.create({
         left: 0,
         right: 0,
         zIndex: 10,
+        backgroundColor: COLORS.bg + "dd",
     },
     header: {
         flexDirection: "row",
