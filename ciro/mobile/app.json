@@ -39,9 +39,7 @@
     "web": {
       "bundler": "metro"
     },
-    "plugins": [
-      "expo-maps"
-    ],
+    "plugins": [],
     "extra": {
       "eas": {
         "projectId": "portfolio-website-cd2c6"
