@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "504328760312",
+    "project_id": "portfolio-website-cd2c6",
+    "storage_bucket": "portfolio-website-cd2c6.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:504328760312:android:86e3bd94fe9e6f7c88c40d",
+        "android_client_info": {
+          "package_name": "com.ciro.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "504328760312-72ne9okgt7tk6u5go52fjntk616eq0i2.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBK43Zu-HVRt7RibS3ybSWta77NC5QU48Q"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "504328760312-72ne9okgt7tk6u5go52fjntk616eq0i2.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

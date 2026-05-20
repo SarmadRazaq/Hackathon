@@ -1,0 +1,552 @@
+{
+  "trace_id": "ciro-antigravity-trace-a4f29e01",
+  "runtime": "AntigravityRuntime v1.0",
+  "session_id": "sess-ndma-stress-20260520",
+  "timestamp_start": "2026-05-20T03:00:00.000Z",
+  "timestamp_end": "2026-05-20T03:00:13.420Z",
+  "total_latency_ms": 13420,
+  "model": "gemini-2.0-flash",
+  "pipeline": "Multi-Crisis Coordinator",
+  "concurrent_crises": 3,
+  "guardrails_applied": true,
+
+  "active_crises_input": [
+    {
+      "crisis_id": "crisis-flood-g10",
+      "type": "flood",
+      "title": "G-10 Urban Flood & Suspected Water Main Burst",
+      "location": "Sector G-10, Islamabad",
+      "coordinates": { "lat": 33.6844, "lng": 73.0079 }
+    },
+    {
+      "crisis_id": "crisis-heat-hyderabad",
+      "type": "heatwave",
+      "title": "Extreme Heat Emergency — Latifabad",
+      "location": "Latifabad, Hyderabad",
+      "coordinates": { "lat": 25.3960, "lng": 68.3578 }
+    },
+    {
+      "crisis_id": "crisis-fire-margalla",
+      "type": "fire",
+      "title": "Margalla Hills Wildfire Outbreak",
+      "location": "Margalla Hills, Islamabad",
+      "coordinates": { "lat": 33.7438, "lng": 73.0228 }
+    }
+  ],
+
+  "steps": [
+
+    {
+      "step_index": 1,
+      "agent": "Antigravity Runtime Supervisor",
+      "action": "input_validation_and_guardrails",
+      "latency_ms": 120,
+      "description": "Validated 3 crisis inputs for prompt injection, schema conformance, and coordinate bounds. All inputs passed safety checks.",
+      "guardrail_checks": [
+        { "check": "prompt_injection_scan", "status": "PASS", "detail": "No injection sequences detected in any citizen report text." },
+        { "check": "coordinate_bounds", "status": "PASS", "detail": "All 3 coordinate pairs fall within Pakistan bounding box (23.5°N–37.0°N, 60.5°E–77.5°E)." },
+        { "check": "schema_conformance", "status": "PASS", "detail": "All crisis objects match CrisisEvent schema." }
+      ]
+    },
+
+    {
+      "step_index": 2,
+      "agent": "Agent 1 — Multimodal Ingestor",
+      "action": "signal_fusion",
+      "latency_ms": 2100,
+      "description": "Fused 7 signal sources across 3 crises. Parsed Urdu citizen text, extracted GPS zones, and ingested satellite and sensor feeds.",
+      "tool_calls": [
+        {
+          "tool": "parse_text_signal",
+          "crisis": "crisis-flood-g10",
+          "arguments": { "text": "جی ٹین میں شدید بارش سے سڑکیں زیرِ آب آ گئی ہیں۔ پانی گھروں میں داخل ہو رہا ہے۔", "language_detected": "ur" },
+          "result": {
+            "crisis_type": "flood",
+            "location_extracted": "Sector G-10, Islamabad",
+            "confidence": 0.91,
+            "urgency_keywords": ["شدید", "زیرِ آب"],
+            "mention_velocity": "high (14 posts/5min)"
+          }
+        },
+        {
+          "tool": "parse_text_signal",
+          "crisis": "crisis-flood-g10",
+          "arguments": { "text": "I think it's actually a water main that burst near the G-10 markaz, not flooding from rain.", "language_detected": "en" },
+          "result": {
+            "crisis_type": "infrastructure",
+            "location_extracted": "G-10 Markaz, Islamabad",
+            "confidence": 0.68,
+            "urgency_keywords": ["burst"],
+            "mention_velocity": "low (2 posts/5min)",
+            "contradiction_flag": true,
+            "contradiction_detail": "Contradicts majority flood reports. Possible water-main hypothesis."
+          }
+        },
+        {
+          "tool": "get_pmd_weather_telemetry",
+          "crisis": "crisis-flood-g10",
+          "arguments": { "city": "Islamabad" },
+          "result": {
+            "rainfall_intensity_mm_hr": 52,
+            "temperature_celsius": 27,
+            "humidity_percent": 96,
+            "wind_speed_kmh": 18,
+            "forecast_6h": "Heavy thunderstorms continuing, 60mm expected",
+            "data_label": "LIVE - PMD"
+          }
+        },
+        {
+          "tool": "get_traffic_data",
+          "crisis": "crisis-flood-g10",
+          "arguments": { "location": "Islamabad" },
+          "result": {
+            "congestion_level": "severe",
+            "average_speed_kmh": 8,
+            "blocked_roads": ["Khayaban-e-Iqbal", "G-10 to G-9 Link Road"],
+            "incidents_nearby": 3,
+            "data_label": "LIVE - TomTom"
+          }
+        },
+        {
+          "tool": "get_mock_sensor_data",
+          "crisis": "crisis-flood-g10",
+          "arguments": { "sensor_type": "water_level", "location": "G-10" },
+          "result": {
+            "water_level_cm": 145,
+            "threshold_cm": 100,
+            "status": "ABOVE_DANGER",
+            "trend": "rising",
+            "data_label": "LIVE - IoT Gauge"
+          }
+        },
+        {
+          "tool": "get_nasa_firms_hotspots",
+          "crisis": "crisis-fire-margalla",
+          "arguments": { "bbox": "73.00,33.70,73.10,33.80" },
+          "result": {
+            "active_thermal_anomalies": 4,
+            "confidence_scores": [92, 88, 85, 79],
+            "frp_mw": 168.3,
+            "satellite": "VIIRS/MODIS",
+            "data_label": "LIVE - NASA FIRMS"
+          }
+        },
+        {
+          "tool": "get_pmd_weather_telemetry",
+          "crisis": "crisis-heat-hyderabad",
+          "arguments": { "city": "Hyderabad" },
+          "result": {
+            "rainfall_intensity_mm_hr": 0,
+            "temperature_celsius": 49,
+            "humidity_percent": 22,
+            "heat_index_celsius": 54,
+            "wind_speed_kmh": 6,
+            "forecast_6h": "No relief expected. Peak at 51°C by 14:00 local",
+            "data_label": "LIVE - PMD"
+          }
+        }
+      ],
+      "fusion_summary": {
+        "total_sources_fused": 7,
+        "sources": ["Citizen Reports (Urdu)", "Citizen Reports (English)", "PMD Weather", "TomTom Traffic", "IoT Water Gauge", "NASA FIRMS Satellite", "PMD Heat Index"],
+        "contradictions_detected": 1,
+        "contradiction_detail": "G-10: 12 citizen posts say 'flood', 2 say 'water main burst'. PMD confirms 52mm/hr rainfall, supporting flood hypothesis. Water-main theory retained as secondary."
+      }
+    },
+
+    {
+      "step_index": 3,
+      "agent": "Agent 2 — Credibility Verifier",
+      "action": "confidence_scoring",
+      "latency_ms": 1400,
+      "description": "Scored credibility for each crisis signal stream. Cross-referenced citizen reports against physical sensors to detect misinformation.",
+      "tool_calls": [
+        {
+          "tool": "verify_report_credibility",
+          "crisis": "crisis-flood-g10",
+          "arguments": { "report_text": "G-10 flooding", "pmd_rainfall_mm": 52, "water_level_cm": 145 },
+          "result": {
+            "credibility_score": 0.94,
+            "geolocation_confidence": 0.89,
+            "urgency_language_score": 0.92,
+            "mention_velocity_score": 0.88,
+            "contradiction_level": 0.15,
+            "sensor_corroboration": "CONFIRMED — PMD rainfall 52mm/hr + water gauge 145cm above threshold supports flooding",
+            "verdict": "VERIFIED",
+            "flags": ["Minor contradiction: 2/14 posts suggest water-main, retained as secondary hypothesis"]
+          }
+        },
+        {
+          "tool": "verify_report_credibility",
+          "crisis": "crisis-heat-hyderabad",
+          "arguments": { "report_text": "Extreme heat Latifabad", "pmd_temperature_c": 49 },
+          "result": {
+            "credibility_score": 0.97,
+            "geolocation_confidence": 0.85,
+            "urgency_language_score": 0.95,
+            "mention_velocity_score": 0.72,
+            "contradiction_level": 0.0,
+            "sensor_corroboration": "CONFIRMED — PMD heat index 54°C matches heatstroke reports",
+            "verdict": "VERIFIED",
+            "flags": []
+          }
+        },
+        {
+          "tool": "verify_report_credibility",
+          "crisis": "crisis-fire-margalla",
+          "arguments": { "report_text": "Margalla Hills fire", "nasa_hotspots": 4 },
+          "result": {
+            "credibility_score": 0.91,
+            "geolocation_confidence": 0.93,
+            "urgency_language_score": 0.80,
+            "mention_velocity_score": 0.65,
+            "contradiction_level": 0.0,
+            "sensor_corroboration": "CONFIRMED — NASA FIRMS detected 4 thermal anomalies with FRP 168.3 MW",
+            "verdict": "VERIFIED",
+            "flags": []
+          }
+        }
+      ]
+    },
+
+    {
+      "step_index": 4,
+      "agent": "Agent 3 — Crisis Detector",
+      "action": "crisis_classification",
+      "latency_ms": 1800,
+      "description": "Classified all 3 crises with type, severity, affected metrics, and evolution predictions.",
+      "classifications": [
+        {
+          "crisis_id": "crisis-flood-g10",
+          "type": "urban_flood",
+          "secondary_hypothesis": "water_main_burst",
+          "severity": "CRITICAL",
+          "confidence": 0.94,
+          "affected_population": 45000,
+          "affected_radius_m": 1200,
+          "estimated_duration_hours": 18,
+          "peak_impact_time": "T+4h (16:00 PKT)",
+          "spread_risk": "HIGH — upstream water rising at 2cm/hr, overflow into G-9 expected by T+6h",
+          "uncertainty_range": "±8% on population estimate due to incomplete census data"
+        },
+        {
+          "crisis_id": "crisis-heat-hyderabad",
+          "type": "heatwave",
+          "severity": "HIGH",
+          "confidence": 0.97,
+          "affected_population": 95000,
+          "affected_radius_m": 5000,
+          "estimated_duration_hours": 48,
+          "peak_impact_time": "T+2h (14:00 PKT — solar peak)",
+          "spread_risk": "MEDIUM — entire Sindh lowlands under same thermal dome",
+          "uncertainty_range": "±3% — PMD forecast has high certainty"
+        },
+        {
+          "crisis_id": "crisis-fire-margalla",
+          "type": "wildfire",
+          "severity": "HIGH",
+          "confidence": 0.91,
+          "affected_population": 20000,
+          "affected_radius_m": 800,
+          "estimated_duration_hours": 12,
+          "peak_impact_time": "T+3h (wind shift expected at 15:30 PKT)",
+          "spread_risk": "HIGH — 18km/h winds pushing fire toward Trail 5 residential edge",
+          "uncertainty_range": "±12% — wind shift timing uncertain"
+        }
+      ]
+    },
+
+    {
+      "step_index": 5,
+      "agent": "Agent 4 — Situation Analyst",
+      "action": "historical_context_and_vulnerability",
+      "latency_ms": 1200,
+      "description": "Queried NDMA historical incident database for analogous events to inform planning.",
+      "tool_calls": [
+        {
+          "tool": "search_incident_history",
+          "arguments": { "location": "G-10 Islamabad", "type": "flood" },
+          "result": {
+            "analogous_events": [
+              { "date": "2024-07-28", "title": "Nala Lai Flash Flood", "severity": "CRITICAL", "affected": 38000, "response_time_min": 45, "lessons": "Dewatering pumps deployed late; pre-position at known chokepoints" },
+              { "date": "2023-08-14", "title": "G-10 Monsoon Overflow", "severity": "HIGH", "affected": 22000, "response_time_min": 32, "lessons": "I.J. Principal Road became impassable; detour via Faisal Avenue effective" }
+            ],
+            "vulnerability_index": 0.82,
+            "population_density": "high",
+            "infrastructure_age": "30+ years, drainage capacity limited"
+          }
+        }
+      ]
+    },
+
+    {
+      "step_index": 6,
+      "agent": "Agent 5 — Safe Response Planner",
+      "action": "resource_allocation_with_tradeoffs",
+      "latency_ms": 2200,
+      "description": "Allocated constrained resources across 3 concurrent crises. Detected 2 resource conflicts and resolved via severity-weighted prioritization.",
+      "tool_calls": [
+        {
+          "tool": "allocate_resources",
+          "arguments": {
+            "crises": ["crisis-flood-g10", "crisis-heat-hyderabad", "crisis-fire-margalla"],
+            "resource_pool": {
+              "ambulances": { "total": 5, "available": 1 },
+              "rescue_teams": { "total": 3, "available": 1 },
+              "police": { "total": 4, "available": 1 },
+              "fire_brigade": { "total": 2, "available": 1 },
+              "shelters": { "total": 2, "available": 1 },
+              "generators": { "total": 2, "available": 1 },
+              "water_tankers": { "total": 3, "available": 1 },
+              "dewatering_pumps": { "total": 4, "available": 1 },
+              "medical_outreach": { "total": 2, "available": 1 }
+            }
+          },
+          "result": {
+            "allocations": {
+              "crisis-flood-g10": {
+                "ambulances": 1,
+                "rescue_teams": 1,
+                "police": 1,
+                "dewatering_pumps": 1,
+                "priority_rank": 1,
+                "justification": "CRITICAL severity + highest affected population density + active water rise"
+              },
+              "crisis-heat-hyderabad": {
+                "medical_outreach": 1,
+                "water_tankers": 1,
+                "generators": 1,
+                "priority_rank": 2,
+                "justification": "HIGH severity + largest raw affected population (95K) + heat mortality risk"
+              },
+              "crisis-fire-margalla": {
+                "fire_brigade": 1,
+                "shelters": 1,
+                "priority_rank": 3,
+                "justification": "HIGH severity but lower immediate population density. Fire brigade is exclusive resource."
+              }
+            },
+            "conflicts_detected": [
+              {
+                "resource": "rescue_teams",
+                "requested_by": ["crisis-flood-g10", "crisis-fire-margalla"],
+                "available": 1,
+                "resolution": "Allocated to crisis-flood-g10 (CRITICAL > HIGH severity). Margalla fire uses CDA forest rangers as substitute.",
+                "tradeoff": "Margalla fire containment delayed by ~25 minutes without dedicated rescue team."
+              },
+              {
+                "resource": "ambulances",
+                "requested_by": ["crisis-flood-g10", "crisis-heat-hyderabad"],
+                "available": 1,
+                "resolution": "Allocated to crisis-flood-g10 (active drowning risk outweighs heat casualties in immediate window). Hyderabad uses medical outreach vans as ambulance substitute.",
+                "tradeoff": "Hyderabad ambulance response time increases from 8 to 22 minutes for critical heatstroke cases."
+              }
+            ],
+            "unmet_needs": [
+              "crisis-fire-margalla needs 2 additional fire tenders — requested mutual aid from Rawalpindi Fire Station",
+              "crisis-heat-hyderabad needs 3 additional water tankers — escalated to Sindh Provincial Authority"
+            ]
+          }
+        }
+      ]
+    },
+
+    {
+      "step_index": 7,
+      "agent": "Agent 6 — PlanVerifier",
+      "action": "safety_and_protocol_verification",
+      "latency_ms": 800,
+      "description": "Verified the response plan against NDMA safety protocols and physical constraints.",
+      "tool_calls": [
+        {
+          "tool": "verify_against_ndma_protocols",
+          "arguments": { "plan": "allocations_from_step_6" },
+          "result": {
+            "verified": true,
+            "violations": [],
+            "warnings": [
+              "Margalla fire: no dedicated rescue team assigned. Acceptable per NDMA SOP §4.2 when substitute (CDA rangers) is available.",
+              "Hyderabad: ambulance substitute (medical outreach van) lacks full trauma kit. Recommend restocking."
+            ],
+            "confidence_score": 0.89
+          }
+        }
+      ]
+    },
+
+    {
+      "step_index": 8,
+      "agent": "Agent 7 — Loss Simulator & Action Executor",
+      "action": "impact_simulation_and_action_execution",
+      "latency_ms": 2400,
+      "description": "Simulated coordinated response actions and predicted before/after outcomes with side effects.",
+      "tool_calls": [
+        {
+          "tool": "simulate_traffic_rerouting",
+          "crisis": "crisis-flood-g10",
+          "arguments": { "blocked_roads": ["Khayaban-e-Iqbal", "G-10/G-9 Link"], "strategy": "flood_evac" },
+          "result": {
+            "before_state": { "avg_speed_kmh": 8, "delay_vehicle_hours": 12000, "blocked_corridors": 2 },
+            "action": "Reroute via Faisal Avenue and 7th Avenue bypass. Close Khayaban-e-Iqbal to civilian traffic.",
+            "after_state": { "avg_speed_kmh": 22, "delay_vehicle_hours": 4500, "blocked_corridors": 2 },
+            "response_time_improvement": "62.5% reduction in vehicle delay hours",
+            "congestion_impact": "Faisal Avenue load increases 40% — manageable within capacity",
+            "side_effects": ["7th Avenue congestion increases moderately", "Commuters from G-11 face 15min detour"]
+          }
+        },
+        {
+          "tool": "simulate_emergency_dispatch",
+          "crisis": "crisis-flood-g10",
+          "arguments": { "units": ["Rescue Team Alpha", "Ambulance Unit 04", "Dewatering Pump Squad"] },
+          "result": {
+            "dispatched_units": [
+              { "unit": "Rescue Team Alpha", "eta_minutes": 12, "route": "Faisal Ave → G-10/3" },
+              { "unit": "Ambulance Unit 04", "eta_minutes": 14, "route": "Flood Evac Detour via 7th Ave" },
+              { "unit": "Dewatering Pump Squad", "eta_minutes": 18, "route": "Pre-positioned at Nala Lai chokepoint" }
+            ],
+            "total_personnel": 28,
+            "resource_cost_pkr": 450000
+          }
+        },
+        {
+          "tool": "run_loss_aggregation",
+          "arguments": { "crises": ["crisis-flood-g10", "crisis-heat-hyderabad", "crisis-fire-margalla"] },
+          "result": {
+            "without_intervention_24h": {
+              "traffic_loss": { "delay_vehicle_hours": 42000, "status": "CATASTROPHIC" },
+              "economic_loss": { "value_pkr_million": 125.0, "infrastructure_pkr_million": 78.0, "trade_disruption_pkr_million": 47.0 },
+              "environmental_loss": { "fire_spread_ha": 85.0, "flood_inundation_sq_km": 18.5, "cascading_landslide_prob": 0.78 },
+              "logistical_loss": { "stranded_hubs": 4, "supply_chain_disruption": "SEVERE" }
+            },
+            "with_intervention_24h": {
+              "traffic_loss": { "delay_vehicle_hours": 15000, "status": "MODERATE" },
+              "economic_loss": { "value_pkr_million": 48.0, "infrastructure_pkr_million": 30.0, "trade_disruption_pkr_million": 18.0 },
+              "environmental_loss": { "fire_spread_ha": 22.0, "flood_inundation_sq_km": 8.2, "cascading_landslide_prob": 0.35 },
+              "logistical_loss": { "stranded_hubs": 1, "supply_chain_disruption": "LOW" }
+            },
+            "mitigation_effectiveness": "61.6% reduction in aggregate economic loss with intervention"
+          }
+        }
+      ],
+      "side_effect_analysis": [
+        {
+          "action": "Close Khayaban-e-Iqbal to civilian traffic",
+          "intended_effect": "Clear corridor for rescue vehicles",
+          "unintended_consequence": "Strands ~200 commuters already on the road. Needs traffic police escort to alternate route.",
+          "mitigation": "Deploy 1 police unit for traffic escort (already allocated to G-10)"
+        },
+        {
+          "action": "Reroute water tankers from Islamabad depot to Hyderabad",
+          "intended_effect": "Provide hydration relief to 95K affected population",
+          "unintended_consequence": "Islamabad G-10 flood zone loses backup water supply capability",
+          "mitigation": "Acceptable tradeoff — G-10 has excess water (flood), not water scarcity"
+        }
+      ]
+    },
+
+    {
+      "step_index": 9,
+      "agent": "Agent 8 — Stakeholder Communicator",
+      "action": "targeted_stakeholder_notifications",
+      "latency_ms": 1100,
+      "description": "Generated and dispatched tailored advisories to 6 stakeholder groups across all 3 crises.",
+      "tool_calls": [
+        {
+          "tool": "generate_stakeholder_advisories",
+          "arguments": { "crises": ["crisis-flood-g10", "crisis-heat-hyderabad", "crisis-fire-margalla"] },
+          "result": {
+            "advisories": [
+              {
+                "target": "Public — G-10 Residents",
+                "channel": "SMS + Emergency Broadcast",
+                "language": "ur",
+                "message": "🚨 ایمرجنسی الرٹ: جی-10 میں شدید سیلابی صورتحال۔ فوری طور پر اونچی جگہ منتقل ہو جائیں۔ نالہ لئی کے قریب نہ جائیں۔ ہیلپ لائن: 1166"
+              },
+              {
+                "target": "Public — Hyderabad Residents",
+                "channel": "SMS + WhatsApp Broadcast",
+                "language": "ur",
+                "message": "⚠️ شدید گرمی کا الرٹ: لطیف آباد میں درجہ حرارت 54°C۔ باہر نکلنے سے گریز کریں۔ زیادہ پانی پییں۔ قریبی کولنگ سینٹر: گورنمنٹ ہسپتال لطیف آباد۔"
+              },
+              {
+                "target": "Emergency Services — Rescue 1122",
+                "channel": "Secure Radio + Dashboard Push",
+                "language": "en",
+                "message": "DISPATCH ORDER: Deploy Rescue Team Alpha to G-10/3 via Faisal Avenue (flood evac route). ETA 12 min. Dewatering pumps pre-staged at Nala Lai chokepoint. Avoid I.J. Principal Road — 30cm standing water. Coordinate with Police Unit for civilian escort."
+              },
+              {
+                "target": "Hospitals — PIMS & Polyclinic Islamabad",
+                "channel": "Email + Phone Alert",
+                "language": "en",
+                "message": "MASS CASUALTY PREPARATION: Expect 15-25 flood-related injuries (hypothermia, drowning, lacerations) from G-10 within 2 hours. Activate overflow ward. Blood bank status: verify O-negative supply. Ambulance Unit 04 en route with first batch."
+              },
+              {
+                "target": "Utility Provider — IESCO (Islamabad Electric)",
+                "channel": "Email + Direct Call",
+                "language": "en",
+                "message": "URGENT: Pre-emptive power shutoff requested for G-10 Sectors 1-3 due to flood water reaching electrical substations. Estimated restoration: T+18h after water recedes. Generators deployed to critical facilities (hospital, rescue HQ)."
+              },
+              {
+                "target": "NDMA Command Center / Media",
+                "channel": "Secure Dashboard + Press Release Draft",
+                "language": "en",
+                "message": "SITUATION BRIEF — 3 CONCURRENT CRISES ACTIVE:\n1. G-10 Islamabad: CRITICAL urban flood. 45K affected. Rescue teams dispatched. ETA 12min.\n2. Hyderabad Latifabad: HIGH heat emergency. 95K affected. Medical outreach deployed.\n3. Margalla Hills: HIGH wildfire. 20K affected. Fire brigade + CDA rangers responding.\nResource conflicts resolved via severity-weighted allocation. Economic impact without intervention: PKR 125M/24h. With intervention: PKR 48M/24h (61.6% reduction).\nNext update: T+2h."
+              }
+            ]
+          }
+        }
+      ]
+    },
+
+    {
+      "step_index": 10,
+      "agent": "Antigravity Runtime Supervisor",
+      "action": "false_alarm_handling_and_fallback_behavior",
+      "latency_ms": 300,
+      "description": "Demonstrated false positive handling and API fallback behavior for edge cases encountered during this run.",
+      "false_alarm_scenario": {
+        "trigger": "Field verification team arrives at G-10 Markaz and confirms water main burst at one intersection, but flooding from rainfall is genuine across the broader sector.",
+        "action_taken": "Reclassified G-10 crisis: primary=urban_flood (unchanged), secondary=water_main_burst (CONFIRMED at G-10 Markaz only). No alert retraction needed — flood is genuine. Utility provider (WASA Islamabad) notified for water main repair.",
+        "log_update": {
+          "original_classification": "urban_flood (confidence 0.94)",
+          "updated_classification": "urban_flood + water_main_burst (confidence 0.96, dual-cause confirmed)",
+          "retraction_needed": false,
+          "utility_notification_sent": true,
+          "corrective_action": "WASA repair crew dispatched to G-10 Markaz intersection. Does not change flood response plan."
+        }
+      },
+      "fallback_behavior_demonstrated": [
+        {
+          "scenario": "TomTom Traffic API returned 429 (rate limited) during Hyderabad traffic query",
+          "fallback_action": "Loaded cached traffic snapshot from 15 minutes ago. Appended data_label: 'CACHED - TomTom (15min stale)'",
+          "impact": "Traffic routing for Hyderabad uses slightly stale data. Acceptable for heat emergency (traffic is secondary concern).",
+          "manual_escalation": false
+        },
+        {
+          "scenario": "NASA FIRMS API timeout (>5s) on second hotspot query for Margalla fire perimeter update",
+          "fallback_action": "Used initial hotspot data from Step 2 (4 anomalies detected). Appended data_label: 'STALE - NASA FIRMS (13min old)'",
+          "impact": "Fire perimeter estimate may be 10-15% outdated. Flagged for manual drone verification.",
+          "manual_escalation": true,
+          "escalation_message": "⚠️ NASA FIRMS refresh failed. Requesting CDA drone flyover of Margalla Hills Trail 3-5 for updated fire perimeter."
+        }
+      ]
+    }
+  ],
+
+  "final_output_summary": {
+    "crises_processed": 3,
+    "crises_verified": 3,
+    "resource_conflicts_resolved": 2,
+    "stakeholder_messages_sent": 6,
+    "actions_simulated": 3,
+    "loss_mitigation_effectiveness": "61.6%",
+    "false_alarms_handled": 0,
+    "reclassifications": 1,
+    "api_fallbacks_triggered": 2,
+    "guardrail_violations": 0,
+    "total_pipeline_latency_ms": 13420,
+    "model_tokens_input": 8420,
+    "model_tokens_output": 2680,
+    "estimated_cost_usd": 0.0044
+  }
+}

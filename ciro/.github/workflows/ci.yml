@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "dev"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  # ─────────────────────────────────────────────
+  # Backend: lint + test
+  # ─────────────────────────────────────────────
+  backend:
+    name: Backend (Python)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Lint with ruff
+        run: ruff check . --exclude venv
+
+      - name: Run tests
+        env:
+          # Provide dummy values so env-requiring modules import cleanly
+          GOOGLE_API_KEY: dummy
+          ALLOWED_ORIGINS: "http://localhost:3000"
+        run: pytest --tb=short -q
+
+  # ─────────────────────────────────────────────
+  # Mobile: type-check
+  # ─────────────────────────────────────────────
+  mobile:
+    name: Mobile (TypeScript)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Lint
+        # Only run if eslint config exists
+        run: |
+          if [ -f .eslintrc.js ] || [ -f .eslintrc.json ] || [ -f eslint.config.js ]; then
+            npx eslint src --ext .ts,.tsx --max-warnings 0
+          else
+            echo "No ESLint config found, skipping lint."
+          fi

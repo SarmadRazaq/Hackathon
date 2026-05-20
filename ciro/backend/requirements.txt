@@ -1,0 +1,20 @@
+google-adk>=0.4.0
+fastapi
+uvicorn[standard]
+python-dotenv
+pydantic
+tenacity
+google-cloud-aiplatform
+google-cloud-texttospeech
+google-cloud-speech
+google-cloud-storage
+# Auth
+firebase-admin>=6.5.0
+# Rate limiting
+slowapi>=0.1.9
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+pytest-mock>=3.14.0
+# Linting
+ruff>=0.4.0

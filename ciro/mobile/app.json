@@ -1,0 +1,48 @@
+{
+  "expo": {
+    "name": "CIRO",
+    "slug": "ciro-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "ciro",
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#080E1E"
+    },
+    "platforms": ["ios", "android", "web"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.ciro.app",
+      "googleServicesFile": "./GoogleService-Info.plist",
+      "infoPlist": {
+        "NSCameraUsageDescription": "CIRO needs camera access to capture crisis images.",
+        "NSMicrophoneUsageDescription": "CIRO needs microphone access for voice reports.",
+        "NSLocationWhenInUseUsageDescription": "CIRO needs location access to detect nearby crises."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#080E1E"
+      },
+      "package": "com.ciro.app",
+      "googleServicesFile": "./google-services.json",
+      "permissions": ["CAMERA", "RECORD_AUDIO", "ACCESS_FINE_LOCATION"],
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyAdoAZKOyWNl3dt-m-oIbAHu-ZCy1HKuDc"
+        }
+      }
+    },
+    "web": {
+      "bundler": "metro"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "portfolio-website-cd2c6"
+      }
+    }
+  }
+}

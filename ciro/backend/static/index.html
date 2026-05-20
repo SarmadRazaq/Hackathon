@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CIRO Command Center</title>
+    <!-- Leaflet Mapping Library -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        :root {
+            --bg: #0A0E1A; --surface: #131929; --surface-el: #1A2236;
+            --primary: #00D4AA; --danger: #FF4757; --warning: #FFA502;
+            --info: #3742FA; --low: #2ED573; --text: #FFFFFF; --text-sec: #8892B0;
+            --border: #1E2A45;
+        }
+        body { font-family: 'Inter', -apple-system, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; padding: 0; display: flex; height: 100vh; overflow: hidden; }
+        .sidebar { width: 320px; background-color: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+        .header { padding: 20px; border-bottom: 1px solid var(--border); }
+        .header h1 { margin: 0; font-size: 20px; color: var(--primary); display: flex; align-items: center; gap: 10px; }
+        .scenarios { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 12px; }
+        .scenario-card { background: var(--surface-el); border: 1px solid var(--border); border-radius: 8px; padding: 15px; cursor: pointer; transition: 0.2s; }
+        .scenario-card:hover { border-color: var(--primary); transform: translateY(-2px); }
+        .scenario-card h3 { margin: 0 0 5px 0; font-size: 14px; }
+        .scenario-card p { margin: 0; font-size: 12px; color: var(--text-sec); }
+        
+        .main-content { flex: 1; display: flex; flex-direction: column; padding: 20px; overflow-y: auto; }
+        .status-bar { display: flex; justify-content: space-between; align-items: center; padding: 15px 20px; background: var(--surface); border-radius: 8px; border: 1px solid var(--border); margin-bottom: 20px; }
+        .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; background: var(--text-sec); margin-right: 8px; }
+        .status-dot.active { background: var(--primary); box-shadow: 0 0 10px var(--primary); animation: pulse 1.5s infinite; }
+        
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; display: flex; flex-direction: column; }
+        .panel h2 { margin: 0 0 15px 0; font-size: 16px; color: var(--primary); border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+        .log-container { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 15px; font-family: 'Inter', -apple-system, sans-serif; font-size: 13px; height: 420px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+        
+        /* Premium Slack-Style Chat Layout */
+        .chat-row { display: flex; gap: 12px; align-items: flex-start; animation: fadeIn 0.3s ease-out; }
+        .chat-avatar { width: 34px; height: 34px; border-radius: 50%; display: flex; justify-content: center; align-items: center; font-size: 16px; border: 1px solid rgba(255,255,255,0.08); flex-shrink: 0; box-shadow: 0 4px 10px rgba(0,0,0,0.15); }
+        .chat-message { flex: 1; background: var(--surface-el); border: 1px solid var(--border); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 4px; position: relative; }
+        .chat-meta { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 4px; margin-bottom: 4px; }
+        .chat-author { font-weight: bold; font-size: 12px; letter-spacing: 0.5px; }
+        .chat-time { font-size: 10px; color: var(--text-sec); }
+        .chat-content { line-height: 1.5; color: #E2E8F0; font-size: 12.5px; }
+        
+        /* Integrated Tool Executions and Safety checks */
+        .tool-attachment { border-left: 3px solid var(--warning); background: rgba(255, 165, 2, 0.05); padding: 8px 12px; border-radius: 4px; font-family: monospace; font-size: 11px; margin-top: 6px; display: flex; align-items: center; gap: 8px; color: #FFA502; border: 1px solid rgba(255, 165, 2, 0.15); border-left-width: 3px; }
+        .tool-attachment.completed { border-left-color: var(--primary); background: rgba(0, 212, 170, 0.04); color: var(--primary); border: 1px solid rgba(0, 212, 170, 0.15); border-left-width: 3px; }
+        
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        
+        .metric-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 15px; }
+        .metric-card { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 15px; text-align: center; }
+        .metric-value { font-size: 24px; font-weight: bold; color: var(--primary); margin: 5px 0; }
+        .metric-label { font-size: 11px; color: var(--text-sec); text-transform: uppercase; letter-spacing: 1px; }
+
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <div class="header">
+            <h1>🚨 CIRO Command Center</h1>
+            <p style="margin: 5px 0 0; font-size: 12px; color: var(--text-sec);">National Disaster Management</p>
+        </div>
+        <div class="scenarios" id="scenarios-list">
+            <div style="text-align: center; color: var(--text-sec); font-size: 12px; margin-top: 20px;">Loading Scenarios...</div>
+        </div>
+    </div>
+    
+    <div class="main-content">
+        <div class="status-bar">
+            <div>
+                <h2 id="current-scenario" style="margin: 0; font-size: 18px;">Select a scenario to begin</h2>
+                <p id="pipeline-status" style="margin: 5px 0 0; font-size: 13px; color: var(--text-sec);">
+                    <span class="status-dot" id="status-indicator"></span> System Idle
+                </p>
+            </div>
+            <div id="severity-badge" style="display: none; padding: 6px 12px; border-radius: 4px; font-weight: bold; font-size: 12px;"></div>
+        </div>
+
+        <div class="grid">
+            <div class="panel">
+                <h2>Live Agent Stream</h2>
+                <div class="log-container" id="log-container">
+                    <div style="color: var(--text-sec); text-align: center; margin-top: 50px;">Awaiting Pipeline Trigger...</div>
+                </div>
+            </div>
+            
+            <div class="panel">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                    <h2 style="margin: 0;">Execution Simulation Results</h2>
+                    <button id="download-pdf-btn" style="display: none; padding: 6px 12px; background: rgba(0, 212, 170, 0.1); border: 1px solid #00D4AA; color: #00D4AA; border-radius: 4px; font-size: 11px; font-weight: bold; cursor: pointer; align-items: center; gap: 6px;" onclick="generateOfficialPDF()">
+                        📥 Official PDF Briefing
+                    </button>
+                </div>
+                <div id="results-content" style="color: var(--text-sec); font-size: 13px; line-height: 1.6; white-space: pre-wrap; flex: 1; overflow-y: auto;">
+                    Simulation data will appear here once the pipeline completes.
+                </div>
+                
+                <!-- Geofenced Map Module -->
+                <div id="map" style="height: 160px; border-radius: 6px; border: 1px solid var(--border); margin-top: 15px; display: none; z-index: 10;"></div>
+                
+                <div class="metric-cards" id="metric-cards" style="display: none;">
+                    <div class="metric-card" style="border-color: var(--primary);">
+                        <div class="metric-value" id="val-congestion">0%</div>
+                        <div class="metric-label">Congestion Drop</div>
+                    </div>
+                    <div class="metric-card" style="border-color: var(--warning);">
+                        <div class="metric-value" id="val-time">0m</div>
+                        <div class="metric-label">Response Time Saved</div>
+                    </div>
+                </div>
+                
+                <!-- Live Responder Playbook Progress Panel -->
+                <div class="metric-card" id="playbook-panel" style="display: none; margin-top: 15px; border-color: #00D4AA; background: rgba(0, 212, 170, 0.03); text-align: left; padding: 15px;">
+                    <h3 style="margin: 0 0 10px 0; font-size: 13px; color: #00D4AA; display: flex; align-items: center; gap: 8px;">
+                        📋 Real-Time Field Operations Tracker
+                    </h3>
+                    
+                    <!-- Progress Bar -->
+                    <div style="height: 6px; background: rgba(255,255,255,0.08); border-radius: 3px; overflow: hidden; margin-bottom: 12px; display: flex;">
+                        <div id="playbook-progress" style="width: 0%; height: 100%; background: #00D4AA; transition: width 0.4s ease-out; box-shadow: 0 0 8px #00D4AA;"></div>
+                    </div>
+                    
+                    <!-- Steps List -->
+                    <div id="playbook-steps-list" style="display: flex; flex-direction: column; gap: 8px; font-size: 11.5px; color: var(--text-sec);">
+                        <!-- Steps will be injected dynamically -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function loadScenarios() {
+            try {
+                const res = await fetch('/api/scenarios');
+                const data = await res.json();
+                const container = document.getElementById('scenarios-list');
+                container.innerHTML = '';
+                
+                data.scenarios.forEach(s => {
+                    const el = document.createElement('div');
+                    el.className = 'scenario-card';
+                    el.onclick = () => runScenario(s.id, s.title, s.severity_hint);
+                    el.innerHTML = `
+                        <h3>${s.icon} ${s.title}</h3>
+                        <p>${s.description}</p>
+                    `;
+                    container.appendChild(el);
+                });
+            } catch (e) {
+                document.getElementById('scenarios-list').innerHTML = '<div style="color: red; padding: 20px;">Failed to load scenarios. Is the backend running?</div>';
+            }
+        }
+
+        function runScenario(id, title, severityHint) {
+            if (playbookInterval) clearInterval(playbookInterval);
+            document.getElementById("playbook-panel").style.display = "none";
+            document.getElementById("download-pdf-btn").style.display = "none";
+            document.getElementById('current-scenario').innerText = title;
+            const indicator = document.getElementById('status-indicator');
+            const statusText = document.getElementById('pipeline-status');
+            const logs = document.getElementById('log-container');
+            const results = document.getElementById('results-content');
+            const metrics = document.getElementById('metric-cards');
+            const badge = document.getElementById('severity-badge');
+            
+            indicator.className = 'status-dot active';
+            statusText.innerHTML = `<span class="status-dot active"></span> Pipeline Running (SSE Stream Active)...`;
+            logs.innerHTML = '';
+            results.innerText = 'Analyzing signals...';
+            metrics.style.display = 'none';
+            
+            const colors = { CRITICAL: 'var(--danger)', HIGH: 'var(--warning)', MEDIUM: 'var(--info)', LOW: 'var(--low)' };
+            badge.style.display = 'block';
+            badge.style.backgroundColor = (colors[severityHint] || colors.MEDIUM) + '33';
+            badge.style.color = colors[severityHint] || colors.MEDIUM;
+            badge.style.border = `1px solid ${colors[severityHint] || colors.MEDIUM}`;
+            badge.innerText = `EXPECTED: ${severityHint}`;
+
+            const source = new EventSource(`/api/analyze/scenario/${id}/stream`);
+            let isFinished = false;
+            
+            // Advanced Agent Metadata Mapping for Slack chat layout
+            const AGENT_META = {
+                'multimodal_ingestor': { name: 'Ingestor Agent', avatar: '📥', color: '#00D4AA', bg: 'rgba(0, 212, 170, 0.1)' },
+                'crisis_detector': { name: 'Detector Agent', avatar: '🚨', color: '#FFAE00', bg: 'rgba(255, 174, 0, 0.1)' },
+                'situation_analyst': { name: 'Situation Analyst', avatar: '🔍', color: '#3742FA', bg: 'rgba(55, 66, 250, 0.1)' },
+                'rescue_advocate': { name: 'Rescue Advocate', avatar: '🏥', color: '#FF5252', bg: 'rgba(255, 82, 82, 0.1)' },
+                'infrastructure_advocate': { name: 'Infrastructure Agent', avatar: '🏗️', color: '#2ED573', bg: 'rgba(46, 213, 115, 0.1)' },
+                'safe_response_planner': { name: 'Response Arbiter', avatar: '⚖️', color: '#FFA502', bg: 'rgba(255, 165, 0, 0.1)' },
+                'forecaster': { name: 'Forecaster Agent', avatar: '📊', color: '#9b59b6', bg: 'rgba(155, 89, 182, 0.1)' },
+                'execution_simulator': { name: 'Simulator Coordinator', avatar: '🤖', color: '#3498db', bg: 'rgba(52, 152, 219, 0.1)' },
+                'antigravity_supervisor': { name: 'Antigravity Supervisor', avatar: '🛰️', color: '#00E5FF', bg: 'rgba(0, 229, 255, 0.1)' },
+                'system': { name: 'NDMA Core System', avatar: '🛡️', color: '#FF4757', bg: 'rgba(255, 71, 87, 0.1)' }
+            };
+
+            source.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === 'log') {
+                    const author = data.data.author || 'system';
+                    const meta = AGENT_META[author] || { name: author, avatar: '👤', color: '#FFFFFF', bg: 'rgba(255,255,255,0.1)' };
+                    
+                    const timeStr = new Date(data.data.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                    
+                    // Let's check if this is an existing stream row we should append to or a fresh row
+                    // In SequentialAgent logs, we can group logs by consecutive author to look like real chat!
+                    let lastRow = logs.lastElementChild;
+                    let isConsecutive = lastRow && lastRow.getAttribute('data-author') === author;
+                    
+                    if (data.data.tool_call) {
+                        // Render nested tool calls as Slack API blocks
+                        const toolDiv = document.createElement('div');
+                        toolDiv.className = 'tool-attachment';
+                        toolDiv.innerHTML = `🔧 <strong>Tool Call:</strong> <code>${data.data.tool_call.name}</code>`;
+                        
+                        if (isConsecutive && lastRow.querySelector('.chat-message')) {
+                            lastRow.querySelector('.chat-message').appendChild(toolDiv);
+                        } else {
+                            createNewChatRow(author, meta, timeStr, toolDiv);
+                        }
+                    } else if (data.data.tool_response) {
+                        // Render completed tool calls in clean primary layout
+                        const resDiv = document.createElement('div');
+                        resDiv.className = 'tool-attachment completed';
+                        resDiv.innerHTML = `⚙️ <strong>Execution Complete:</strong> <code>${data.data.tool_response.name}</code>`;
+                        
+                        if (isConsecutive && lastRow.querySelector('.chat-message')) {
+                            lastRow.querySelector('.chat-message').appendChild(resDiv);
+                        } else {
+                            createNewChatRow(author, meta, timeStr, resDiv);
+                        }
+                    } else {
+                        // Standard Dialogue text
+                        if (!data.data.content || data.data.content.trim() === 'undefined') {
+                            return;
+                        }
+                        
+                        const textP = document.createElement('div');
+                        textP.className = 'chat-content';
+                        textP.innerText = data.data.content;
+                        
+                        if (isConsecutive && lastRow.querySelector('.chat-message')) {
+                            lastRow.querySelector('.chat-message').appendChild(textP);
+                        } else {
+                            createNewChatRow(author, meta, timeStr, textP);
+                        }
+                    }
+                    
+                    logs.scrollTop = logs.scrollHeight;
+                } else if (data.type === 'result' || data.type === 'done') {
+                    isFinished = true;
+                    source.close();
+                    indicator.className = 'status-dot';
+                    indicator.style.background = 'var(--primary)';
+                    statusText.innerHTML = `<span class="status-dot" style="background: var(--primary);"></span> Pipeline Complete (${data.data.pipeline_duration_seconds}s)`;
+                    
+                    const report = data.data;
+                    const simResults = report.agent_outputs?.simulation_results || "Simulation failed.";
+                    results.innerText = simResults.split('__RESCUE_DISPATCH__')[0];
+                    
+                    // Parse Impact Metrics
+                    let routeData = null;
+                    const metricsMatch = simResults.match(/__IMPACT_METRICS__:\s*(\{[\s\S]*?\})/);
+                    if (metricsMatch && metricsMatch[1]) {
+                        try {
+                            const parsed = JSON.parse(metricsMatch[1]);
+                            document.getElementById('val-congestion').innerText = (parsed.congestion_reduced_pct || 0) + '%';
+                            document.getElementById('val-time').innerText = (parsed.response_time_saved_mins || 0) + 'm';
+                            metrics.style.display = 'grid';
+                            routeData = parsed;
+                        } catch(e) {}
+                    }
+
+                    // Initialize real-time dispatcher checked steps tracking
+                    startPlaybookTracker(report.metadata?.session_id || `CIRO-${report.id?.slice(0, 8).toUpperCase()}`, id);
+
+                    // Show the Official PDF Briefing button
+                    document.getElementById('download-pdf-btn').style.display = 'flex';
+
+                    // Parse and Draw Geofenced Danger Polygon on dark map
+                    const sitReport = report.agent_outputs?.situation_report || "";
+                    const polyMatch = sitReport.match(/__POLYGON__:\s*(\[[\s\S]*?\])/);
+                    if (polyMatch && polyMatch[1]) {
+                        try {
+                            const coords = JSON.parse(polyMatch[1]);
+                            updateLeafletMap(coords);
+                            
+                            // Trigger dynamic path animations after map is initialized and focused
+                            if (routeData && (routeData.original_route || routeData.new_route)) {
+                                setTimeout(() => {
+                                    animateVehicleRoute(routeData.original_route, routeData.new_route);
+                                }, 800);
+                            }
+                        } catch(e) {
+                            console.error("Leaflet polygon parse error:", e);
+                        }
+                    }
+
+
+                } else if (data.type === 'error') {
+                    source.close();
+                    indicator.className = 'status-dot';
+                    indicator.style.background = 'var(--danger)';
+                    statusText.innerHTML = `<span class="status-dot" style="background: var(--danger);"></span> Pipeline Failed`;
+                    results.innerText = data.data;
+                }
+            };
+
+            source.onerror = () => {
+                source.close();
+                if (isFinished) {
+                    // Suppress natural connection teardown at end of successful SSE stream
+                    return;
+                }
+                indicator.className = 'status-dot';
+                indicator.style.background = 'var(--danger)';
+                statusText.innerHTML = `<span class="status-dot" style="background: var(--danger);"></span> Connection Lost`;
+            };
+        }
+
+        function createNewChatRow(author, meta, timeStr, childElement) {
+            const row = document.createElement('div');
+            row.className = 'chat-row';
+            row.setAttribute('data-author', author);
+            
+            row.innerHTML = `
+                <div class="chat-avatar" style="background-color: ${meta.bg}; color: ${meta.color};">
+                    ${meta.avatar}
+                </div>
+                <div class="chat-message">
+                    <div class="chat-meta">
+                        <span class="chat-author" style="color: ${meta.color};">${meta.name}</span>
+                        <span class="chat-time">${timeStr}</span>
+                    </div>
+                </div>
+            `;
+            
+            row.querySelector('.chat-message').appendChild(childElement);
+            logs.appendChild(row);
+        }
+
+        function animateVehicleRoute(originalRoute, newRoute) {
+            if (!leafletMapInstance) return;
+            
+            console.log("Starting ambulance routing animation...", originalRoute, newRoute);
+            
+            // 1. Draw original congested route in dashed red
+            if (originalRoute && originalRoute.length > 0) {
+                const originalLatLngs = originalRoute.map(c => [c.lat || c.latitude, c.lng || c.longitude]);
+                L.polyline(originalLatLngs, {
+                    color: 'var(--danger)',
+                    dashArray: '5, 8',
+                    weight: 2,
+                    opacity: 0.75
+                }).addTo(leafletMapInstance);
+            }
+            
+            // 2. Draw optimized rescue route in solid bright neon primary
+            if (newRoute && newRoute.length > 0) {
+                const newLatLngs = newRoute.map(c => [c.lat || c.latitude, c.lng || c.longitude]);
+                L.polyline(newLatLngs, {
+                    color: '#00D4AA',
+                    weight: 3,
+                    opacity: 0.95
+                }).addTo(leafletMapInstance);
+                
+                // 3. Create Custom pulsing ambulance marker div
+                const vehicleIcon = L.divIcon({
+                    html: `
+                        <div style="
+                            background: #00D4AA;
+                            border: 2px solid #FFFFFF;
+                            width: 24px;
+                            height: 24px;
+                            border-radius: 50%;
+                            box-shadow: 0 0 12px #00D4AA;
+                            display: flex;
+                            justify-content: center;
+                            align-items: center;
+                            font-size: 11px;
+                            animation: pulse 1.5s infinite;
+                        ">🚑</div>
+                    `,
+                    className: 'map-pulse-marker',
+                    iconSize: [26, 26],
+                    iconAnchor: [13, 13]
+                });
+                
+                const vehicleMarker = L.marker(newLatLngs[0], { icon: vehicleIcon }).addTo(leafletMapInstance);
+                
+                // 4. Animate along route coordinates smoothly over a total duration
+                let currentIdx = 0;
+                const totalPoints = newLatLngs.length;
+                const stepMs = Math.max(250, Math.min(1000, 7500 / totalPoints));
+                
+                const timer = setInterval(() => {
+                    if (currentIdx >= totalPoints) {
+                        clearInterval(timer);
+                        console.log("Ambulance routing animation complete!");
+                        return;
+                    }
+                    
+                    const nextCoords = newLatLngs[currentIdx];
+                    vehicleMarker.setLatLng(nextCoords);
+                    currentIdx++;
+                }, stepMs);
+            }
+        }
+
+        function generateOfficialPDF() {
+            const currentScenarioTitle = document.getElementById("current-scenario").innerText;
+            const logContainer = document.getElementById("log-container").innerText;
+            const resultsContent = document.getElementById("results-content").innerText;
+            const congestion = document.getElementById("val-congestion").innerText;
+            const timeSaved = document.getElementById("val-time").innerText;
+            
+            const printWindow = window.open("", "_blank");
+            printWindow.document.write(`
+                <html>
+                    <head>
+                        <title>CIRO Official Government Briefing — ${currentScenarioTitle}</title>
+                        <style>
+                            body { font-family: system-ui, -apple-system, sans-serif; color: #1E293B; padding: 40px; line-height: 1.6; }
+                            .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #00D4AA; padding-bottom: 20px; margin-bottom: 30px; }
+                            .logo { font-size: 24px; font-weight: 800; color: #0F172A; }
+                            .meta { font-size: 12px; color: #64748B; text-align: right; }
+                            h1 { font-size: 22px; color: #0F172A; margin: 0 0 10px 0; }
+                            h2 { font-size: 16px; color: #1E293B; border-left: 4px solid #00D4AA; padding-left: 10px; margin: 30px 0 15px 0; text-transform: uppercase; letter-spacing: 0.5px; }
+                            .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 30px; }
+                            .card { background: #F8FAFC; border: 1px solid #E2E8F0; padding: 15px; border-radius: 8px; }
+                            .metric { font-size: 24px; font-weight: 800; color: #00D4AA; }
+                            .label { font-size: 11px; text-transform: uppercase; color: #64748B; font-weight: bold; }
+                            .content-box { background: #F8FAFC; border: 1px solid #E2E8F0; padding: 20px; border-radius: 8px; white-space: pre-wrap; font-size: 13px; color: #334155; }
+                            .footer { margin-top: 50px; font-size: 11px; color: #94A3B8; text-align: center; border-top: 1px solid #E2E8F0; padding-top: 20px; }
+                        </style>
+                    </head>
+                    <body>
+                        <div class="header">
+                            <div>
+                                <div class="logo">🚨 CIRO COMMAND CENTER</div>
+                                <div style="font-size: 12px; color: #64748B; font-weight: bold; margin-top: 4px;">NATIONAL DISASTER MANAGEMENT AUTHORITY (NDMA)</div>
+                            </div>
+                            <div class="meta">
+                                <div><strong>Date:</strong> ${new Date().toLocaleString()}</div>
+                                <div><strong>Status:</strong> DISPATCHED (VERIFIED)</div>
+                                <div><strong>Orchestration:</strong> GPT-4o Multi-Agent</div>
+                            </div>
+                        </div>
+                        
+                        <h1>${currentScenarioTitle}</h1>
+                        <div style="font-size: 13px; color: #64748B; margin-bottom: 25px;">Official Emergency Response & Simulation Briefing. Confirmed and bound by NDMA Safe-Response guardrails.</div>
+                        
+                        <div class="grid">
+                            <div class="card">
+                                <div class="metric">${congestion}</div>
+                                <div class="label">Traffic Congestion Reduced</div>
+                            </div>
+                            <div class="card">
+                                <div class="metric">${timeSaved}</div>
+                                <div class="label">Response Time Saved</div>
+                            </div>
+                        </div>
+                        
+                        <h2>Tactical Mitigation & Simulation Outcomes</h2>
+                        <div class="content-box">${resultsContent}</div>
+                        
+                        <h2>Live Orchestration Audit Transcript</h2>
+                        <div class="content-box" style="font-family: monospace; font-size: 11px;">${logContainer}</div>
+                        
+                        <div class="footer">
+                            Generated Autonomously by CIRO Platform • Government of Pakistan Disaster Mitigation Protocol • Confirmed Signature NDMA Security
+                        </div>
+                        
+                        <script>
+                            window.onload = function() {
+                                window.print();
+                                setTimeout(function() { window.close(); }, 500);
+                            };
+                        <\/script>
+                    </body>
+                </html>
+            `);
+            printWindow.document.close();
+        }
+
+        let playbookInterval = null;
+        function startPlaybookTracker(sessionId, scenarioId) {
+            if (playbookInterval) clearInterval(playbookInterval);
+            
+            // Hardcoded steps based on scenario
+            let steps = [
+                "Deploy first responders to low-lying sectors.",
+                "Initiate detour signals and reroute major transit pathways.",
+                "Issue real-time mobile broadcasts to local residents.",
+                "Secure local hospital emergency wings."
+            ];
+            
+            if (scenarioId.includes("heat")) {
+                steps = [
+                    "Set up medical cooling relief tents in commercial hubs.",
+                    "Distribute cold water bottles and hydration supplements.",
+                    "Activate load-shedding exemptions for local grid operations.",
+                    "Deploy mobile cooling vans to high-density areas."
+                ];
+            } else if (scenarioId.includes("traffic") || scenarioId.includes("accident")) {
+                steps = [
+                    "Deploy traffic wardens to clear main underpasses.",
+                    "Clear disabled vehicles using heavy tow trucks.",
+                    "Optimize signal timings along adjacent transit corridors.",
+                    "Broadcast route guidance alerts to approaching drivers."
+                ];
+            }
+            
+            const panel = document.getElementById("playbook-panel");
+            panel.style.display = "block";
+            
+            const pollFn = async () => {
+                try {
+                    const res = await fetch(`/api/playbook/${sessionId}`);
+                    const data = await res.json();
+                    const completed = data.completedSteps || {};
+                    
+                    const listContainer = document.getElementById("playbook-steps-list");
+                    listContainer.innerHTML = "";
+                    
+                    let completedCount = 0;
+                    steps.forEach((step, idx) => {
+                        const isDone = !!completed[idx];
+                        if (isDone) completedCount++;
+                        
+                        const item = document.createElement("div");
+                        item.style.display = "flex";
+                        item.style.alignItems = "center";
+                        item.style.gap = "8px";
+                        item.style.padding = "4px 0";
+                        
+                        const icon = isDone ? "✅" : "⬜";
+                        const textDecoration = isDone ? "line-through" : "none";
+                        const color = isDone ? "#00D4AA" : "var(--text)";
+                        
+                        item.innerHTML = `
+                            <span>${icon}</span>
+                            <span style="text-decoration: ${textDecoration}; color: ${color};">${step}</span>
+                        `;
+                        listContainer.appendChild(item);
+                    });
+                    
+                    const pct = Math.round((completedCount / steps.length) * 100);
+                    document.getElementById("playbook-progress").style.width = `${pct}%`;
+                } catch (e) {
+                    console.error("Error polling playbook checklist status:", e);
+                }
+            };
+            
+            pollFn(); // Run immediately
+            playbookInterval = setInterval(pollFn, 2500); // Poll every 2.5 seconds
+        }
+
+        let leafletMapInstance = null;
+
+        function updateLeafletMap(polygonCoords) {
+            const mapDiv = document.getElementById('map');
+            mapDiv.style.display = 'block';
+            
+            if (!leafletMapInstance) {
+                // Initialize map centered at Islamabad (33.6844, 73.0479)
+                leafletMapInstance = L.map('map', { zoomControl: false }).setView([33.6844, 73.0479], 14);
+                
+                // Add CartoDB Dark Matter tile layer for gorgeous aesthetic consistency
+                L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                    maxZoom: 19,
+                    attribution: '&copy; <a href="https://carto.com/">CARTO</a>'
+                }).addTo(leafletMapInstance);
+            }
+            
+            // Clear any existing polygons or markers from previous runs
+            leafletMapInstance.eachLayer((layer) => {
+                if (layer instanceof L.Polygon || layer instanceof L.Marker) {
+                    leafletMapInstance.removeLayer(layer);
+                }
+            });
+            
+            if (polygonCoords && polygonCoords.length > 0) {
+                const latlngs = polygonCoords.map(c => [c.latitude || c.lat, c.longitude || c.lng]);
+                
+                // Draw dynamic neon primary-colored geofenced polygon
+                const polygon = L.polygon(latlngs, {
+                    color: '#00D4AA',
+                    fillColor: '#00D4AA',
+                    fillOpacity: 0.18,
+                    weight: 2
+                }).addTo(leafletMapInstance);
+                
+                // Add a target marker in the center
+                const bounds = polygon.getBounds();
+                const center = bounds.getCenter();
+                
+                const customIcon = L.divIcon({
+                    html: '<span style="font-size: 20px;">📍</span>',
+                    iconSize: [24, 24],
+                    iconAnchor: [12, 24],
+                    className: 'map-custom-marker'
+                });
+                L.marker(center, { icon: customIcon }).addTo(leafletMapInstance);
+                
+                leafletMapInstance.fitBounds(bounds, { padding: [10, 10] });
+                
+                // Force size invalidation so it renders fully within layout
+                setTimeout(() => {
+                    leafletMapInstance.invalidateSize();
+                }, 200);
+            }
+        }
+
+        loadScenarios();
+    </script>
+</body>
+</html>

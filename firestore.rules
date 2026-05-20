@@ -1,0 +1,49 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─────────────────────────────────────────────
+    // Helper Functions
+    // ─────────────────────────────────────────────
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // ─────────────────────────────────────────────
+    // Users Profile Collection
+    // ─────────────────────────────────────────────
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if isOwner(userId);
+    }
+
+    // ─────────────────────────────────────────────
+    // Emergency Reports Collection
+    // ─────────────────────────────────────────────
+    match /reports/{reportId} {
+      // Anyone authenticated can query or submit reports
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      
+      // Update logic: Allow upvoting (array union of votes) or incrementing counters
+      allow update: if isAuthenticated() && (
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['upvotes', 'votes'])
+      );
+      
+      // Strict security: Nobody can delete emergency reports
+      allow delete: if false;
+    }
+
+    // ─────────────────────────────────────────────
+    // System Parameters / Playbooks
+    // ─────────────────────────────────────────────
+    match /parameters/{docId} {
+      allow read: if isAuthenticated();
+      allow write: if false; // Read-only system configuration
+    }
+  }
+}
