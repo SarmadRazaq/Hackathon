@@ -3,6 +3,7 @@ import re
 import json
 import logging
 from google.adk.agents import LlmAgent
+from google.adk.models.lite_llm import LiteLlm
 from .tools import (
     detect_prompt_injection,
     parse_text_signal,
@@ -11,7 +12,8 @@ from .tools import (
 )
 
 logger = logging.getLogger("ciro.verifier")
-MODEL = "openai/gpt-4o-mini"
+# Non-Gemini models must be wrapped in LiteLlm for Google ADK.
+MODEL = LiteLlm(model="openai/gpt-4o-mini")
 
 citizen_report_verifier = LlmAgent(
     name="citizen_report_verifier",

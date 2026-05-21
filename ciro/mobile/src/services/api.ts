@@ -208,7 +208,19 @@ function startStream(
         const parsed = JSON.parse(line.slice(6));
         if (parsed.type === "log") onLog(parsed.data);
         else if (parsed.type === "done") { finished = true; onDone(parsed.data); }
-        else if (parsed.type === "error") { finished = true; onError(parsed.data); }
+        else if (parsed.type === "error") {
+          finished = true;
+          // Backend may send `data` as a dict (orchestrator error_entry) or the
+          // message under `message` (multi_coordinator). Normalize to a string
+          // so Alert.alert never receives a ReadableNativeMap.
+          const d = parsed.data;
+          const msg =
+            typeof d === "string" ? d :
+            d?.content || d?.message || d?.error ||
+            parsed.message ||
+            "The pipeline encountered an error. Please try again.";
+          onError(String(msg));
+        }
       } catch (e) {
         console.error("SSE parse error (length: " + line.length + "):", e);
       }

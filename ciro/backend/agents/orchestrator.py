@@ -27,6 +27,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 logger = logging.getLogger("ciro.orchestrator")
 
 from google.adk.agents import SequentialAgent, LlmAgent
+from google.adk.models.lite_llm import LiteLlm
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
@@ -91,7 +92,11 @@ if vertex_project:
 else:
     global_client = None
 
-MODEL = "openai/gpt-4o-mini"
+# Model identifier string — kept as-is for metadata/serialization.
+MODEL_NAME = "openai/gpt-4o-mini"
+# Non-Gemini models must be wrapped in LiteLlm; ADK can only resolve
+# bare strings for Gemini, otherwise LLMRegistry raises ValueError.
+MODEL = LiteLlm(model=MODEL_NAME)
 
 # ---------------------------------------------
 # Agent 1: Multimodal Ingestor (Vision + Text + Sensors + Calls)
@@ -527,7 +532,7 @@ Process this through all 8 agents: Multimodal Ingestion -> Crisis Detection -> S
         "metadata": {
             "user_id": user_id,
             "session_id": session.id,
-            "model": MODEL,
+            "model": MODEL_NAME,
             "agents_count": 9,
             "timestamp": start_time.isoformat(),
         }
@@ -626,7 +631,7 @@ Process this through all 8 agents: Multimodal Ingeston -> Crisis Detection -> Si
         error_entry = {
             "timestamp": datetime.now().isoformat(),
             "author": "system",
-            "content": f"Pipeline error: {type(exc).__name__}",
+            "content": f"Pipeline error: {type(exc).__name__}: {str(exc)[:500]}",
             "error": True,
         }
         yield f"data: {json.dumps({'type': 'error', 'data': error_entry})}\n\n"
@@ -676,7 +681,7 @@ Process this through all 8 agents: Multimodal Ingeston -> Crisis Detection -> Si
         "metadata": {
             "user_id": user_id,
             "session_id": session.id,
-            "model": MODEL,
+            "model": MODEL_NAME,
             "agents_count": 9,
             "timestamp": start_time.isoformat(),
         }
