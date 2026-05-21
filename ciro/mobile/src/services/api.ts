@@ -21,6 +21,27 @@ async function authHeaders(): Promise<Record<string, string>> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+// Fetch wrapper that aborts after `timeoutMs` and turns unreachable-backend errors
+// into a single, recognisable Error so callers can surface a clean message.
+export async function fetchWithTimeout(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = 20_000
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (err: any) {
+    if (err?.name === "AbortError") {
+      throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s — backend may be slow or offline at ${BASE_URL}`);
+    }
+    throw new Error(`Network error reaching ${BASE_URL}: ${err?.message || err}`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ─────────────────────────────────────────────
 // TypeScript Interfaces
 // ─────────────────────────────────────────────
@@ -96,6 +117,16 @@ export async function getScenarios(): Promise<Scenario[]> {
   if (!res.ok) throw new Error("Failed to fetch scenarios");
   const data = await res.json();
   return data.scenarios;
+}
+
+export async function getScenarioCacheStatus(): Promise<{ cached_scenarios: string[]; total_scenarios: number; cached_count: number }> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/scenarios/cache/status`);
+    if (!res.ok) return { cached_scenarios: [], total_scenarios: 0, cached_count: 0 };
+    return res.json();
+  } catch {
+    return { cached_scenarios: [], total_scenarios: 0, cached_count: 0 };
+  }
 }
 
 export async function generateTTS(text: string, language: string = "en-US"): Promise<string> {
@@ -230,7 +261,7 @@ export async function getActiveCrises(token: string): Promise<any[]> {
       headers.Authorization = `Bearer ${token}`;
     }
 
-    const res = await fetch(`${BASE_URL}/api/crises/active`, { headers });
+    const res = await fetchWithTimeout(`${BASE_URL}/api/crises/active`, { headers }, 12_000);
 
     if (!res.ok) {
       console.warn(`getActiveCrises failed with status ${res.status}`);
@@ -257,40 +288,112 @@ export async function getActiveCrises(token: string): Promise<any[]> {
 }
 
 export async function getResourcePool(token: string): Promise<any> {
-  const res = await fetch(`${BASE_URL}/api/resources/pool`, {
+  const res = await fetchWithTimeout(`${BASE_URL}/api/resources/pool`, {
     headers: { Authorization: `Bearer ${token}` },
-  });
+  }, 12_000);
+  if (!res.ok) throw new Error(`Resource pool failed (${res.status})`);
   return res.json();
 }
 
 export async function getImpactAnalysis(crisisId: string, token: string): Promise<any> {
-  const res = await fetch(`${BASE_URL}/api/impact/${crisisId}`, {
+  const res = await fetchWithTimeout(`${BASE_URL}/api/impact/${crisisId}`, {
     headers: { Authorization: `Bearer ${token}` },
-  });
+  }, 15_000);
+  if (!res.ok) throw new Error(`Impact analysis failed (${res.status})`);
   return res.json();
 }
 
 export async function getComparison(crisisId: string, token: string): Promise<any> {
-  const res = await fetch(`${BASE_URL}/api/comparison/${crisisId}`, {
+  const res = await fetchWithTimeout(`${BASE_URL}/api/comparison/${crisisId}`, {
     headers: { Authorization: `Bearer ${token}` },
-  });
+  }, 15_000);
+  if (!res.ok) throw new Error(`Comparison fetch failed (${res.status})`);
   return res.json();
 }
 
 export async function verifyReport(reportId: string, token: string): Promise<any> {
-  const res = await fetch(`${BASE_URL}/api/reports/${reportId}/verify`, {
+  const res = await fetchWithTimeout(`${BASE_URL}/api/reports/${reportId}/verify`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-  });
+  }, 30_000);
+  if (!res.ok) throw new Error(`Verify failed (${res.status})`);
   return res.json();
 }
 
 export async function draftCommsMessage(stakeholderType: string, crisisId: string, language: string, token: string): Promise<any> {
-  const res = await fetch(`${BASE_URL}/api/comms/draft`, {
+  const res = await fetchWithTimeout(`${BASE_URL}/api/comms/draft`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ stakeholder_type: stakeholderType, crisis_id: crisisId, language }),
-  });
+  }, 20_000);
+  if (!res.ok) throw new Error(`Draft generation failed (${res.status})`);
+  return res.json();
+}
+
+export async function sendCommsMessage(params: { stakeholder_type: string, crisis_id: string, language: string, drafted_message: string, sender_uid: string }, token: string): Promise<any> {
+  const res = await fetchWithTimeout(`${BASE_URL}/api/comms/send`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  }, 15_000);
+  if (!res.ok) throw new Error(`Comms send failed (${res.status})`);
+  return res.json();
+}
+
+export async function runScenario(scenarioId: string, token?: string): Promise<any> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const controller = new AbortController();
+  const timeoutMs = 180_000;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(`${BASE_URL}/api/analyze/scenario/${scenarioId}`, {
+      method: 'POST',
+      headers,
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`Scenario ${scenarioId} failed (${res.status}): ${body.slice(0, 200)}`);
+    }
+    return res.json();
+  } catch (err: any) {
+    if (err.name === "AbortError") {
+      throw new Error(`Scenario timed out after ${timeoutMs / 1000}s — is the backend running on ${BASE_URL}?`);
+    }
+    throw new Error(`Could not reach backend at ${BASE_URL}: ${err.message || err}`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function generateActionPlan(
+  crisisType: string,
+  location: string,
+  severity: string,
+  context?: string
+): Promise<{ plan: any[]; source: string; model: string }> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(await authHeaders()),
+  };
+  const res = await fetchWithTimeout(
+    `${BASE_URL}/api/generate-action-plan`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        crisis_type: crisisType,
+        location,
+        severity,
+        context: context || "",
+      }),
+    },
+    30_000
+  );
+  if (!res.ok) throw new Error(`Action plan generation failed (${res.status})`);
   return res.json();
 }
 

@@ -146,38 +146,41 @@ def get_weather_data(location: str) -> dict:
         search_query = location
 
     try:
+        # Check API key
+        api_key = os.getenv("OPENWEATHER_API_KEY")
+        if not api_key:
+            raise ValueError("OPENWEATHER_API_KEY not set")
+
         # Geocoding
-        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={search_query}&count=1"
+        geo_url = f"http://api.openweathermap.org/geo/1.0/direct?q={search_query}&limit=1&appid={api_key}"
         geo_res = requests.get(geo_url, timeout=5).json()
-        if not geo_res.get("results"):
+        if not geo_res:
             raise ValueError(f"Could not geocode {search_query}")
             
-        lat = geo_res["results"][0]["latitude"]
-        lon = geo_res["results"][0]["longitude"]
+        lat = geo_res[0]["lat"]
+        lon = geo_res[0]["lon"]
         
         # Weather
-        weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,wind_speed_10m&timezone=auto"
+        weather_url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={api_key}&units=metric"
         weather_res = requests.get(weather_url, timeout=5).json()
-        current = weather_res["current"]
+        
         # Apply frontend overrides
         overrides = sensor_overrides_ctx.get()
         rain_override = overrides.get('rainfall')
         temp_override = overrides.get('temperature')
         
-        if rain_override is not None:
-            current["precipitation"] = float(rain_override)
-        if temp_override is not None:
-            current["temperature_2m"] = float(temp_override)
+        rain = float(rain_override) if rain_override is not None else weather_res.get("rain", {}).get("1h", 0)
+        temp = float(temp_override) if temp_override is not None else weather_res["main"]["temp"]
 
         return {
             "city": search_query,
-            "temperature_c": current["temperature_2m"],
-            "humidity_pct": current["relative_humidity_2m"],
-            "rainfall_mm_last_hour": current["precipitation"],
-            "wind_speed_kmh": current["wind_speed_10m"],
-            "conditions": "Live weather conditions applied",
+            "temperature_c": temp,
+            "humidity_pct": weather_res["main"]["humidity"],
+            "rainfall_mm_last_hour": rain,
+            "wind_speed_kmh": weather_res["wind"]["speed"] * 3.6, # Convert m/s to km/h
+            "conditions": weather_res["weather"][0]["description"].title() if "weather" in weather_res and len(weather_res["weather"]) > 0 else "Live weather conditions applied",
             "alerts": [],
-            "data_label": "LIVE API (Open-Meteo)",
+            "data_label": "LIVE API (OpenWeather)",
             "timestamp": datetime.now().isoformat()
         }
     except Exception as e:
@@ -1590,26 +1593,53 @@ def get_ndma_alerts(region: str) -> dict:
     Returns:
         dict with active alert advisories.
     """
-    alerts = {
-        "islamabad": [
-            "⚠️ MONSOON FLOODING WARNING: Heavy urban flooding expected in low-lying sectors of Islamabad/Rawalpindi.",
-            "🌧️ WASA and rescue agencies placed on high alert."
-        ],
-        "sindh": [
-            "🔥 EXTREME HEATWAVE ALERT: Karachi index expected to reach 50C+. Cooling centers activated."
-        ],
-        "punjab": [
-            "🌫️ SMOG ADVISORY: High AQI values in Lahore. Public advised to wear masks and limit outdoor activities."
-        ]
-    }
-    
     region_clean = region.strip().lower()
-    active = alerts.get(region_clean, [f"⚠️ Standard weather advisory active for {region} region."])
-    return {
-        "region": region,
-        "active_alerts": active,
-        "data_label": "LIVE - NDMA"
-    }
+    
+    try:
+        from google.cloud import firestore
+        import os
+        project_id = os.getenv("FIREBASE_PROJECT_ID", "portfolio-website-cd2c6")
+        db = firestore.Client(project=project_id)
+        
+        # We look for a document whose ID matches the region name, or query where region=region_clean
+        alerts_ref = db.collection("ndma_alerts").where("region", "==", region_clean).get()
+        active = []
+        if alerts_ref:
+            for doc in alerts_ref:
+                data = doc.to_dict()
+                if data.get("status") == "active":
+                    active.append(data.get("message", ""))
+        
+        if not active:
+            active = [f"⚠️ Standard weather advisory active for {region} region."]
+            
+        return {
+            "region": region,
+            "active_alerts": active,
+            "data_label": "LIVE - NDMA (Firestore)"
+        }
+    except Exception as e:
+        print(f"Failed to fetch NDMA alerts from Firestore: {e}")
+        # Fallback to mock data if Firestore fails
+        alerts = {
+            "islamabad": [
+                "⚠️ MONSOON FLOODING WARNING: Heavy urban flooding expected in low-lying sectors of Islamabad/Rawalpindi.",
+                "🌧️ WASA and rescue agencies placed on high alert."
+            ],
+            "sindh": [
+                "🔥 EXTREME HEATWAVE ALERT: Karachi index expected to reach 50C+. Cooling centers activated."
+            ],
+            "punjab": [
+                "🌫️ SMOG ADVISORY: High AQI values in Lahore. Public advised to wear masks and limit outdoor activities."
+            ]
+        }
+        
+        active = alerts.get(region_clean, [f"⚠️ Standard weather advisory active for {region} region."])
+        return {
+            "region": region,
+            "active_alerts": active,
+            "data_label": "LIVE - NDMA (Fallback)"
+        }
 
 
 # ─────────────────────────────────────────────

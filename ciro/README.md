@@ -168,6 +168,15 @@ The backend exposes critical endpoints for data synchronization:
 * **`GET /api/comparison/{id}`**: Returns comparative metrics mapping agent decisions against a rule-based engine.
 * **`GET /api/logs/export`**: Exports detailed, down-loadable execution trace JSONs for grading and debugging.
 
+### Managing NDMA Alerts (Firestore)
+NDMA Alerts are dynamically fetched from the `ndma_alerts` Firestore collection. To add or update an alert for a specific region:
+1. Open the Firebase Console.
+2. Navigate to Firestore Database and select the `ndma_alerts` collection.
+3. Create or edit a document with the following fields:
+   - `region` (string): Lowercase region name (e.g., `islamabad`, `punjab`, `sindh`).
+   - `message` (string): The advisory message content.
+   - `status` (string): Set to `active` to enable the alert.
+
 ---
 
 ## 📊 Baseline Scorer vs. Agentic Orchestrator

@@ -21,6 +21,7 @@ import ResourcesScreen from "./src/screens/ResourcesScreen";
 import ImpactScreen from "./src/screens/ImpactScreen";
 import CommsScreen from "./src/screens/CommsScreen";
 import ActionPlanScreen from "./src/screens/ActionPlanScreen";
+import TestModeScreen from "./src/screens/TestModeScreen";
 import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
 import { updateDoc } from "firebase/firestore";
@@ -49,6 +50,7 @@ export type RootStackParamList = {
   Impact: undefined;
   Comms: undefined;
   ActionPlan: undefined;
+  TestMode: undefined;
 };
 
 const Stack = createStackNavigator<RootStackParamList>();
@@ -126,6 +128,7 @@ export default function App() {
             <Stack.Screen name="Impact" component={ImpactScreen} />
             <Stack.Screen name="Comms" component={CommsScreen} />
             <Stack.Screen name="ActionPlan" component={ActionPlanScreen} />
+            <Stack.Screen name="TestMode" component={TestModeScreen} />
           </>
         ) : (
           <>

@@ -6,8 +6,40 @@ import {
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
+import * as Notifications from "expo-notifications";
 import { auth } from "../services/firebaseConfig";
-import { getActiveCrises, draftCommsMessage } from "../services/api";
+import { getActiveCrises, draftCommsMessage, sendCommsMessage } from "../services/api";
+
+const STAKEHOLDER_LABELS: Record<string, string> = {
+    citizens: "📢 Public Alert",
+    wasa: "💧 WASA Operators",
+    ndma: "🛡️ NDMA Command",
+};
+
+async function fireLocalNotification(stakeholder: string, language: string, body: string) {
+    try {
+        const settings = await Notifications.getPermissionsAsync();
+        let granted = settings.granted || settings.ios?.status === Notifications.IosAuthorizationStatus.PROVISIONAL;
+        if (!granted) {
+            const req = await Notifications.requestPermissionsAsync();
+            granted = req.granted || req.ios?.status === Notifications.IosAuthorizationStatus.PROVISIONAL;
+        }
+        if (!granted) return;
+
+        const title = STAKEHOLDER_LABELS[stakeholder] || "CIRO Alert";
+        await Notifications.scheduleNotificationAsync({
+            content: {
+                title: language === "ur" ? `${title} (اردو)` : title,
+                body,
+                data: { stakeholder, language, source: "comms_dispatch" },
+                sound: "default",
+            },
+            trigger: null, // fire immediately
+        });
+    } catch (e) {
+        console.warn("Local notification failed:", e);
+    }
+}
 
 const { width } = Dimensions.get("window");
 
@@ -31,6 +63,8 @@ export default function CommsScreen() {
     const [selectedStakeholder, setSelectedStakeholder] = useState<string>("citizens");
     const [language, setLanguage] = useState<"en" | "ur">("en");
     const [draftText, setDraftText] = useState<string>("");
+    const [sending, setSending] = useState(false);
+    const [sendStatus, setSendStatus] = useState<"success" | "error" | null>(null);
 
     const loadCrises = async () => {
         try {
@@ -112,6 +146,36 @@ export default function CommsScreen() {
     const handleStakeholderChange = (stakeholder: string) => {
         Haptics.selectionAsync();
         setSelectedStakeholder(stakeholder);
+    };
+
+    const handleSend = async () => {
+        if (!selectedCrisisId || !draftText) return;
+        setSending(true);
+        setSendStatus(null);
+        try {
+            const token = await auth.currentUser?.getIdToken() || "";
+            const uid = auth.currentUser?.uid || "anonymous";
+            await sendCommsMessage({
+                stakeholder_type: selectedStakeholder,
+                crisis_id: selectedCrisisId,
+                language: language,
+                drafted_message: draftText,
+                sender_uid: uid
+            }, token);
+            // Fire a local push so the dispatcher (and any viewer) sees the message
+            // hit the device, simulating downstream stakeholder delivery.
+            fireLocalNotification(selectedStakeholder, language, draftText);
+            setSendStatus("success");
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            setTimeout(() => setSendStatus(null), 3000);
+        } catch (err) {
+            console.warn("Send comms failed", err);
+            setSendStatus("error");
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+            setTimeout(() => setSendStatus(null), 3000);
+        } finally {
+            setSending(false);
+        }
     };
 
     return (
@@ -198,6 +262,24 @@ export default function CommsScreen() {
                         </Text>
                     )}
                 </View>
+
+                {/* Send Button */}
+                <TouchableOpacity 
+                    style={[styles.sendBtn, (loading || sending || !draftText) && styles.sendBtnDisabled, sendStatus === "success" && styles.sendBtnSuccess, sendStatus === "error" && styles.sendBtnError]}
+                    onPress={handleSend}
+                    disabled={loading || sending || !draftText}
+                >
+                    {sending ? (
+                        <ActivityIndicator color={C.bg} />
+                    ) : (
+                        <>
+                            <Ionicons name={sendStatus === "success" ? "checkmark-circle" : sendStatus === "error" ? "close-circle" : "send"} size={18} color={C.bg} style={{ marginRight: 8 }} />
+                            <Text style={styles.sendBtnText}>
+                                {sendStatus === "success" ? "Message Dispatched!" : sendStatus === "error" ? "Failed to Dispatch" : "Dispatch Message"}
+                            </Text>
+                        </>
+                    )}
+                </TouchableOpacity>
             </ScrollView>
         </View>
     );
@@ -247,5 +329,18 @@ const styles = StyleSheet.create({
     draftBody: { color: C.text, fontSize: 15, lineHeight: 22 },
     urduText: { textAlign: "right", writingDirection: "rtl", fontFamily: Platform.OS === "android" ? "normal" : "Geeza Pro", fontSize: 17 },
     draftLoader: { flex: 1, justifyContent: "center", alignItems: "center", paddingVertical: 40 },
-    draftLoaderText: { color: C.textSec, fontSize: 12, marginTop: 8 }
+    draftLoaderText: { color: C.textSec, fontSize: 12, marginTop: 8 },
+    sendBtn: {
+        backgroundColor: C.primary,
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        paddingVertical: 14,
+        borderRadius: 12,
+        marginTop: 20,
+    },
+    sendBtnDisabled: { opacity: 0.5 },
+    sendBtnSuccess: { backgroundColor: C.low },
+    sendBtnError: { backgroundColor: C.danger },
+    sendBtnText: { color: C.bg, fontSize: 16, fontWeight: "700" }
 });

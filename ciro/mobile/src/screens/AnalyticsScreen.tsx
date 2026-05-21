@@ -9,7 +9,7 @@ import { PieChart, BarChart } from "react-native-chart-kit";
 import { collection, query, orderBy, onSnapshot } from "firebase/firestore";
 import { db } from "../services/firebaseConfig";
 import { Ionicons } from "@expo/vector-icons";
-import MapView, { Marker, Circle, UrlTile } from "react-native-maps";
+import HotspotMap from "../components/HotspotMap";
 
 const { width } = Dimensions.get("window");
 
@@ -38,6 +38,10 @@ const GEO_LOOKUP: Record<string, { lat: number; lng: number }> = {
     "Peshawar": { lat: 34.0151, lng: 71.5249 },
     "Quetta": { lat: 30.1798, lng: 66.9750 },
     "Rawalpindi": { lat: 33.5651, lng: 73.0169 },
+    "Abbottabad": { lat: 34.1495, lng: 73.2115 },
+    "Multan": { lat: 30.1968, lng: 71.4697 },
+    "Faisalabad": { lat: 31.4181, lng: 73.0776 },
+    "Murree": { lat: 33.9070, lng: 73.3943 },
 };
 
 const SEV_COLORS: Record<string, string> = {
@@ -139,7 +143,7 @@ export default function AnalyticsScreen({ navigation }: any) {
         if (!coords || typeof coords !== 'object' || !coords.lat) {
             // Try to find coordinates from location lookup
             for (const [key, val] of Object.entries(GEO_LOOKUP)) {
-                if (loc.includes(key)) {
+                if (loc.toLowerCase().includes(key.toLowerCase())) {
                     coords = { lat: val.lat, lng: val.lng };
                     break;
                 }
@@ -250,48 +254,22 @@ export default function AnalyticsScreen({ navigation }: any) {
                             <Text style={styles.chartSub}>{heatmapMarkers.length} incidents mapped — tap marker for details</Text>
                         </View>
                     </View>
-                    <View style={{ height: 280, borderRadius: 14, overflow: "hidden", borderWidth: 1, borderColor: C.border }}>
-                        <MapView
-                            style={{ flex: 1 }}
-                            mapType={Platform.OS === "android" ? "none" : "standard"}
-                            initialRegion={{
-                                latitude: 30.3753,
-                                longitude: 69.3451,
-                                latitudeDelta: 10,
-                                longitudeDelta: 10,
-                            }}
-                            userInterfaceStyle="dark"
-                        >
-                            <UrlTile urlTemplate="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-                                                     shouldReplaceMapContent={true} maximumZ={19} tileSize={256} />
-                            {heatmapMarkers.map((marker, i) => (
-                                <React.Fragment key={i}>
-                                    <Marker
-                                        coordinate={{ latitude: marker.lat, longitude: marker.lng }}
-                                        title={marker.title}
-                                        onPress={() => {
-                                            if (marker.incident) {
-                                                navigation.navigate("Result", { report: marker.incident });
-                                            }
-                                        }}
-                                    >
-                                        <View style={{
-                                            width: 14, height: 14, borderRadius: 7,
-                                            backgroundColor: SEV_COLORS[marker.severity] || C.info,
-                                            borderWidth: 2, borderColor: '#fff',
-                                        }} />
-                                    </Marker>
-                                    <Circle
-                                        center={{ latitude: marker.lat, longitude: marker.lng }}
-                                        radius={15000}
-                                        fillColor={(SEV_COLORS[marker.severity] || C.info) + "22"}
-                                        strokeColor={(SEV_COLORS[marker.severity] || C.info) + "44"}
-                                        strokeWidth={1}
-                                    />
-                                </React.Fragment>
-                            ))}
-                        </MapView>
-                    </View>
+                    <HotspotMap
+                        markers={heatmapMarkers.map((m, i) => ({
+                            id: String(i),
+                            lat: m.lat,
+                            lng: m.lng,
+                            severity: m.severity,
+                            title: m.title,
+                        }))}
+                        height={280}
+                        onMarkerPress={(id) => {
+                            const m = heatmapMarkers[Number(id)];
+                            if (m?.incident) {
+                                navigation.navigate("Result", { report: m.incident });
+                            }
+                        }}
+                    />
 
                     {/* Severity legend */}
                     <View style={styles.legendRow}>

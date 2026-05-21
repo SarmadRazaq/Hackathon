@@ -745,6 +745,27 @@ async def analyze_custom(
         raise HTTPException(status_code=500, detail="Pipeline failed — please retry")
 
 
+# Scenario result cache — populated lazily on first run AND by background pre-warm.
+# Maps scenario_id → cached pipeline result. Surviving restarts is out of scope
+# (in-memory is fine for the hackathon demo).
+scenario_cache: dict[str, dict] = {}
+scenario_inflight: dict[str, asyncio.Lock] = {}
+
+
+async def _run_and_cache_scenario(scenario_id: str, scenario: dict) -> dict:
+    """Run the full pipeline once and cache the result. Concurrent calls for the
+    same scenario_id share a single Lock so we never run the pipeline twice."""
+    lock = scenario_inflight.setdefault(scenario_id, asyncio.Lock())
+    async with lock:
+        if scenario_id in scenario_cache:
+            return scenario_cache[scenario_id]
+        result = await runtime.execute_pipeline(scenario["input"])
+        result["scenario"] = {"id": scenario["id"], "title": scenario["title"]}
+        scenario_cache[scenario_id] = result
+        logger.info("Cached scenario result scenario=%s", scenario_id)
+        return result
+
+
 @app.post("/api/analyze/scenario/{scenario_id}")
 @limiter.limit("5/minute")
 async def analyze_scenario(
@@ -758,14 +779,22 @@ async def analyze_scenario(
             status_code=404,
             detail=f"Scenario '{scenario_id}' not found. Available: {list(SCENARIOS.keys())}",
         )
-    logger.info("Scenario start uid=%s scenario=%s", user.get("uid"), scenario_id)
+
+    # Cache hit — return instantly.
+    if scenario_id in scenario_cache:
+        logger.info("Scenario cache HIT uid=%s scenario=%s", user.get("uid"), scenario_id)
+        cached = scenario_cache[scenario_id]
+        # Fire alerts again so demo viewers see push notifications even on cache hits.
+        asyncio.create_task(trigger_alerts_from_result(cached))
+        return {**cached, "cached": True}
+
+    logger.info("Scenario cache MISS — running pipeline uid=%s scenario=%s", user.get("uid"), scenario_id)
     try:
-        result = await runtime.execute_pipeline(scenario["input"])
-        result["scenario"] = {"id": scenario["id"], "title": scenario["title"]}
-        
+        result = await _run_and_cache_scenario(scenario_id, scenario)
+
         # Trigger background notifications dynamically
         asyncio.create_task(trigger_alerts_from_result(result))
-        
+
         # Log trace
         execution_traces.append({
             "id": f"trace-{uuid.uuid4().hex[:8]}",
@@ -773,13 +802,61 @@ async def analyze_scenario(
             "input": scenario["input"],
             "output": result
         })
-        
-        return result
+
+        return {**result, "cached": False}
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="Pipeline timed out — please retry")
     except Exception:
         logger.exception("Scenario pipeline error uid=%s scenario=%s", user.get("uid"), scenario_id)
         raise HTTPException(status_code=500, detail="Pipeline failed — please retry")
+
+
+@app.post("/api/scenarios/cache/clear")
+async def clear_scenario_cache(user: dict = Depends(require_auth)):
+    """Wipe the scenario cache. Useful for forcing a fresh run during testing."""
+    count = len(scenario_cache)
+    scenario_cache.clear()
+    scenario_inflight.clear()
+    logger.info("Scenario cache cleared by uid=%s (%d entries)", user.get("uid"), count)
+    return {"cleared": count}
+
+
+@app.get("/api/scenarios/cache/status")
+async def scenario_cache_status():
+    """Report which scenarios are cached. Used by Test Mode UI to show ⚡ pre-warmed chip."""
+    return {
+        "cached_scenarios": list(scenario_cache.keys()),
+        "total_scenarios": len(SCENARIOS),
+        "cached_count": len(scenario_cache),
+    }
+
+
+async def _prewarm_scenarios_background():
+    """Run all scenarios once after startup so the first user tap is also a cache hit.
+    Runs serially in the background — does not block server startup."""
+    # Small delay so the server can finish booting and start serving health checks first.
+    await asyncio.sleep(5)
+    logger.info("Starting scenario pre-warm for %d scenarios", len(SCENARIOS))
+    for sid, scenario in SCENARIOS.items():
+        if sid in scenario_cache:
+            continue
+        try:
+            await _run_and_cache_scenario(sid, scenario)
+        except Exception as e:
+            logger.warning("Pre-warm failed for scenario=%s: %s", sid, e)
+    logger.info("Scenario pre-warm complete (%d cached / %d total)", len(scenario_cache), len(SCENARIOS))
+
+
+@app.on_event("startup")
+async def _kick_off_prewarm():
+    # Pre-warm is OPT-IN: it blocks the event loop during pipeline runs, which
+    # makes every other endpoint (impact, resources, comms) time out for the
+    # first ~10 minutes after boot. Set CIRO_ENABLE_PREWARM=true only when you
+    # are about to demo and want every scenario tap to be instant.
+    if os.getenv("CIRO_ENABLE_PREWARM", "").lower() not in ("1", "true", "yes"):
+        logger.info("Scenario pre-warm disabled (set CIRO_ENABLE_PREWARM=true to enable)")
+        return
+    asyncio.create_task(_prewarm_scenarios_background())
 
 
 class SSEManager:
@@ -917,6 +994,14 @@ class CommsDraftRequest(BaseModel):
     language: str = Field("en", description="en or ur")
 
 
+class CommsSendRequest(BaseModel):
+    crisis_id: str
+    stakeholder_type: str
+    language: str
+    drafted_message: str
+    sender_uid: str
+
+
 class TestInjectRequest(BaseModel):
     type: str = Field("flood")
     title: str = Field("Test Crisis")
@@ -932,24 +1017,107 @@ class TestInjectRequest(BaseModel):
 # ─────────────────────────────────────────────
 @app.get("/api/crises/active")
 async def get_active_crises():
-    """Return all crises with status 'active' from Firestore or demo data."""
-    crises = []
+    """Return active crises aggregated from Firestore (crises + reports collections)
+    plus the in-memory fallback. Citizen-submitted reports are upgraded into crises
+    so dispatchers see everything the field has reported."""
+    crises: list[dict] = []
+    seen_ids: set[str] = set()
 
-    # Try Firestore first
+    GEO_LOOKUP = {
+        "islamabad": (33.6844, 73.0479), "g-10": (33.6688, 73.0124),
+        "karachi": (24.8607, 67.0011), "lahore": (31.5204, 74.3587),
+        "gulberg": (31.5131, 74.3485), "saddar": (24.8556, 67.0283),
+        "george town": (24.85, 66.99), "peshawar": (34.0151, 71.5249),
+        "quetta": (30.1798, 66.9750), "rawalpindi": (33.5651, 73.0169),
+        "i-8": (33.6651, 73.0726),
+    }
+
+    def coords_from_location(loc: str):
+        if not loc:
+            return None
+        low = loc.lower()
+        for k, v in GEO_LOOKUP.items():
+            if k in low:
+                return {"lat": v[0], "lng": v[1]}
+        return None
+
     try:
+        if not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+            logger.warning("No GOOGLE_APPLICATION_CREDENTIALS, skipping Firestore crises fetch to prevent timeout.")
+            raise Exception("No credentials")
+        
         from google.cloud import firestore
         project_id = os.getenv("EXPO_PUBLIC_FIREBASE_PROJECT_ID") or "portfolio-website-cd2c6"
         db = firestore.Client(project=project_id)
-        # Use keyword argument to avoid deprecation warning
-        docs = db.collection("crises").where(field_path="status", op_string="==", value="active").stream()
-        for doc in docs:
-            data = doc.to_dict()
-            data["id"] = doc.id
-            crises.append(data)
+
+        # 1. The canonical "crises" collection.
+        try:
+            docs = db.collection("crises").where(field_path="status", op_string="==", value="active").stream()
+            for doc in docs:
+                data = doc.to_dict()
+                data["id"] = doc.id
+                if data["id"] not in seen_ids:
+                    seen_ids.add(data["id"])
+                    crises.append(data)
+        except Exception as e:
+            logger.warning(f"crises collection scan failed: {e}")
+
+        # 2. Citizen-submitted reports — surface them as active crises too.
+        try:
+            docs = db.collection("reports").stream()
+            for doc in docs:
+                r = doc.to_dict()
+                doc_id = f"report-{doc.id}"
+                if doc_id in seen_ids:
+                    continue
+                # Skip resolved reports.
+                if (r.get("status") or "").lower() in ("resolved", "false_alarm", "rejected"):
+                    continue
+                # Infer severity from pipelineResult if present.
+                sev = "MEDIUM"
+                if r.get("pipelineResult"):
+                    try:
+                        parsed = json.loads(r["pipelineResult"])
+                        assessment = (parsed.get("agent_outputs", {}) or {}).get("crisis_assessment", "")
+                        if "CRITICAL" in assessment: sev = "CRITICAL"
+                        elif "HIGH" in assessment: sev = "HIGH"
+                        elif "LOW" in assessment: sev = "LOW"
+                    except Exception:
+                        pass
+                location = r.get("traffic_location") or r.get("weather_location") or "Unknown"
+                coords = coords_from_location(location)
+                # Try to derive a crisis type from the social-media text.
+                text = (r.get("social_media_text") or "").lower()
+                if "flood" in text or "rain" in text or "nullah" in text: ctype = "flash_flood"
+                elif "heat" in text or "heatstroke" in text: ctype = "heatwave"
+                elif "fire" in text or "wire" in text: ctype = "fire"
+                elif "accident" in text or "traffic" in text or "collision" in text: ctype = "accident"
+                else: ctype = "other"
+
+                seen_ids.add(doc_id)
+                crises.append({
+                    "id": doc_id,
+                    "type": ctype,
+                    "title": f"Citizen Report — {location}",
+                    "location": location,
+                    "severity": sev,
+                    "status": "active",
+                    "detected_at": r.get("createdAt") or datetime.now(timezone.utc).isoformat(),
+                    "source": "Citizen Report",
+                    "affected_population": int(r.get("upvotes", 0)) * 50 + 100,
+                    "coordinates": coords,
+                    "description": (r.get("social_media_text") or "")[:200],
+                    "resources_allocated": {},
+                    "report_id": doc.id,
+                    "upvotes": r.get("upvotes", 0),
+                })
+        except Exception as e:
+            logger.warning(f"reports collection scan failed: {e}")
+
     except Exception as e:
         logger.warning(f"Could not fetch crises from Firestore: {e}")
 
-    # Fall back to demo crises if Firestore is empty
+    # Fallback ONLY if Firestore returned nothing at all.
     if not crises:
         crises = [c for c in active_crises if c["status"] == "active"]
 
@@ -1212,7 +1380,56 @@ async def verify_report(report_id: str):
 @app.get("/api/impact/{crisis_id}")
 async def get_impact_simulation(crisis_id: str):
     """Return realistic impact & loss estimates for a crisis using aggregate_impact_losses tool."""
+    # 1. In-memory store.
     crisis = next((c for c in active_crises if c["id"] == crisis_id), None)
+
+    # 2. Firestore `crises` collection (seeded by mobile/seed_db.mjs).
+    if not crisis:
+        try:
+            from google.cloud import firestore
+            project_id = os.getenv("EXPO_PUBLIC_FIREBASE_PROJECT_ID") or "portfolio-website-cd2c6"
+            fdb = firestore.Client(project=project_id)
+            doc = fdb.collection("crises").document(crisis_id).get()
+            if doc.exists:
+                crisis = doc.to_dict()
+                crisis["id"] = crisis_id
+        except Exception as e:
+            logger.warning(f"Firestore crisis lookup failed for {crisis_id}: {e}")
+
+    # 3. Citizen report IDs are surfaced as crises with id="report-<docId>".
+    if not crisis and crisis_id.startswith("report-"):
+        try:
+            from google.cloud import firestore
+            project_id = os.getenv("EXPO_PUBLIC_FIREBASE_PROJECT_ID") or "portfolio-website-cd2c6"
+            fdb = firestore.Client(project=project_id)
+            doc_id = crisis_id[len("report-"):]
+            doc = fdb.collection("reports").document(doc_id).get()
+            if doc.exists:
+                r = doc.to_dict()
+                # Infer severity from pipelineResult if available.
+                sev = "MEDIUM"
+                ctype = "flood"
+                if r.get("pipelineResult"):
+                    try:
+                        parsed = json.loads(r["pipelineResult"])
+                        assessment = (parsed.get("agent_outputs", {}) or {}).get("crisis_assessment", "")
+                        if "CRITICAL" in assessment: sev = "CRITICAL"
+                        elif "HIGH" in assessment: sev = "HIGH"
+                        elif "LOW" in assessment: sev = "LOW"
+                        sig = (parsed.get("agent_outputs", {}) or {}).get("ingested_signals", "{}")
+                        ctype = json.loads(sig).get("crisis_type", ctype) if isinstance(sig, str) else sig.get("crisis_type", ctype)
+                    except Exception:
+                        pass
+                crisis = {
+                    "id": crisis_id,
+                    "type": ctype,
+                    "severity": sev,
+                    "location": r.get("weather_location") or r.get("traffic_location") or "Unknown",
+                    "title": f"Citizen Report — {r.get('weather_location') or r.get('traffic_location') or 'Unknown'}",
+                }
+        except Exception as e:
+            logger.warning(f"Firestore report lookup failed for {crisis_id}: {e}")
+
     if not crisis:
         raise HTTPException(status_code=404, detail=f"Crisis '{crisis_id}' not found.")
 
@@ -1314,6 +1531,141 @@ async def get_impact_simulation(crisis_id: str):
 
 
 # ─────────────────────────────────────────────
+# AI-driven Action Plan Generation
+# ─────────────────────────────────────────────
+FALLBACK_PLANS: dict[str, list[dict]] = {
+    "flood": [
+        {"phase": "Ingestion & Analysis", "time": "T+2m", "desc": "Citizen reports cross-referenced with WASA and telemetry.", "status": "pending"},
+        {"phase": "Safety Verification", "time": "T+5m", "desc": "No prompt injection detected. Location confirmed via geocoding.", "status": "pending"},
+        {"phase": "Resource Mobilization", "time": "T+15m", "desc": "Dewatering pumps and ambulances dispatched to affected sector.", "status": "pending"},
+        {"phase": "Public Alert Broadcast", "time": "T+20m", "desc": "Bilingual warning broadcast sent to residents in the sector.", "status": "pending"},
+        {"phase": "Evacuation Coordination", "time": "T+1h", "desc": "Coordinate with Rescue 1122 for low-lying area evacuations.", "status": "pending"},
+        {"phase": "Post-Incident Recovery", "time": "T+24h", "desc": "Utility restoration, drainage cleanup and damage assessment.", "status": "pending"},
+    ],
+    "heatwave": [
+        {"phase": "Signal Detection", "time": "T+2m", "desc": "Temperature anomaly matched against PMD heat indices.", "status": "pending"},
+        {"phase": "Vulnerability Check", "time": "T+5m", "desc": "Calculated high risk in high-density informal settlements.", "status": "pending"},
+        {"phase": "Medical Alert", "time": "T+15m", "desc": "Hospitals placed on heatstroke surge protocol.", "status": "pending"},
+        {"phase": "Cooling Stations Setup", "time": "T+30m", "desc": "Deploying water tankers and setting up shaded triage zones.", "status": "pending"},
+        {"phase": "Load-Shedding Moratorium", "time": "T+1h", "desc": "Requesting grid operator to suspend power cuts during peak index.", "status": "pending"},
+    ],
+    "earthquake": [
+        {"phase": "Seismic Confirmation", "time": "T+1m", "desc": "Cross-reference PMD seismic data with citizen reports.", "status": "pending"},
+        {"phase": "Structural Assessment", "time": "T+10m", "desc": "Deploy rapid assessment teams to high-density zones.", "status": "pending"},
+        {"phase": "Search & Rescue", "time": "T+20m", "desc": "Dispatch rescue teams with heavy equipment to collapse sites.", "status": "pending"},
+        {"phase": "Medical Triage", "time": "T+30m", "desc": "Set up field hospitals and triage points near affected areas.", "status": "pending"},
+        {"phase": "Aftershock Monitoring", "time": "T+2h", "desc": "Continuous seismic monitoring and public advisories.", "status": "pending"},
+    ],
+    "accident": [
+        {"phase": "Incident Confirmation", "time": "T+2m", "desc": "Emergency call verified and location pinpointed.", "status": "pending"},
+        {"phase": "First Responder Dispatch", "time": "T+5m", "desc": "Ambulances and fire brigade dispatched to scene.", "status": "pending"},
+        {"phase": "Traffic Diversion", "time": "T+10m", "desc": "Police units redirect traffic to alternate routes.", "status": "pending"},
+        {"phase": "Medical Evacuation", "time": "T+20m", "desc": "Injured transported to nearest trauma centers.", "status": "pending"},
+        {"phase": "Scene Clearance", "time": "T+2h", "desc": "Wreckage removed and road reopened.", "status": "pending"},
+    ],
+}
+# Default fallback for unknown types
+FALLBACK_PLANS["default"] = [
+    {"phase": "Signal Detection", "time": "T+2m", "desc": "Initial reports cross-referenced with sensor data.", "status": "pending"},
+    {"phase": "Threat Assessment", "time": "T+5m", "desc": "Severity and scope evaluated by analysis agents.", "status": "pending"},
+    {"phase": "Resource Dispatch", "time": "T+15m", "desc": "Emergency resources mobilized to affected area.", "status": "pending"},
+    {"phase": "Public Communication", "time": "T+20m", "desc": "Alert broadcast to affected population.", "status": "pending"},
+    {"phase": "Recovery Planning", "time": "T+24h", "desc": "Post-incident assessment and restoration initiated.", "status": "pending"},
+]
+
+
+from fastapi import Body
+
+
+@app.post("/api/generate-action-plan")
+async def generate_action_plan(req: dict = Body(...)):
+    """Generate an AI-driven contextual action plan for a crisis using Gemini."""
+    crisis_type = req.get("crisis_type", "unknown")
+    location = req.get("location", "Unknown")
+    severity = req.get("severity", "MEDIUM")
+    context = req.get("context", "")
+
+    try:
+        from google.genai import Client
+        import json as _json
+
+        client = Client()
+        prompt = f"""You are an expert crisis response planner for Pakistan's National Disaster Management Authority (NDMA).
+
+Generate a detailed, actionable response plan for the following crisis:
+- Crisis Type: {crisis_type}
+- Location: {location}
+- Severity: {severity}
+- Additional Context: {context or 'None provided'}
+
+Return a JSON array of 5-7 response phases. Each phase must have:
+- "phase": short phase name (e.g. "Resource Mobilization")
+- "time": estimated time offset (e.g. "T+15m", "T+2h", "T+24h")
+- "desc": one-sentence actionable description specific to this crisis and location
+- "status": always "pending"
+
+Make the plan specific to the crisis type, location, and severity. Reference local institutions (Rescue 1122, WASA, PMD, NDMA, CDA, etc.) where relevant. Consider Pakistan's infrastructure and emergency response capabilities.
+
+Return ONLY the JSON array, no markdown formatting."""
+
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt,
+            config={
+                "response_mime_type": "application/json"
+            }
+        )
+        res_text = response.text.strip()
+        # Clean markdown fences if present
+        if res_text.startswith("```"):
+            res_text = res_text.split("```")[1]
+            if res_text.startswith("json"):
+                res_text = res_text[4:]
+        plan = _json.loads(res_text.strip())
+
+        # Validate structure
+        if not isinstance(plan, list) or len(plan) == 0:
+            raise ValueError("Invalid plan structure from Gemini")
+        for step in plan:
+            if not all(k in step for k in ("phase", "time", "desc", "status")):
+                raise ValueError("Missing required fields in plan step")
+
+        logger.info(f"AI action plan generated for {crisis_type} at {location} ({len(plan)} phases)")
+        return {
+            "plan": plan,
+            "source": "ai",
+            "model": "gemini-2.0-flash",
+            "crisis_type": crisis_type,
+            "location": location,
+            "severity": severity,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    except Exception as e:
+        logger.warning(f"Gemini action plan generation failed: {e}. Using fallback.")
+        # Use type-specific fallback or default
+        fallback_key = crisis_type.lower().replace(" ", "_")
+        # Match partial keys
+        matched_plan = FALLBACK_PLANS.get("default")
+        for key in FALLBACK_PLANS:
+            if key in fallback_key or fallback_key in key:
+                matched_plan = FALLBACK_PLANS[key]
+                break
+
+        import copy as _copy
+        plan = _copy.deepcopy(matched_plan)
+        return {
+            "plan": plan,
+            "source": "fallback",
+            "model": "none",
+            "crisis_type": crisis_type,
+            "location": location,
+            "severity": severity,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+
+# ─────────────────────────────────────────────
 # Communications drafting
 # ─────────────────────────────────────────────
 @app.post("/api/comms/draft")
@@ -1353,6 +1705,37 @@ async def draft_communication(body: CommsDraftRequest):
         "drafted_message": message,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+@app.post("/api/comms/send")
+async def send_communication(body: CommsSendRequest):
+    """Simulate sending a communication and log it to Firestore."""
+    try:
+        from google.cloud import firestore
+        project_id = os.getenv("EXPO_PUBLIC_FIREBASE_PROJECT_ID") or "portfolio-website-cd2c6"
+        db = firestore.Client(project=project_id)
+        
+        doc_ref = db.collection("comms_log").document()
+        sent_at = datetime.now(timezone.utc).isoformat()
+        
+        doc_ref.set({
+            "crisis_id": body.crisis_id,
+            "stakeholder_type": body.stakeholder_type,
+            "language": body.language,
+            "message": body.drafted_message,
+            "sent_at": sent_at,
+            "sender_uid": body.sender_uid,
+            "status": "simulated"
+        })
+        
+        return {
+            "success": True,
+            "log_id": doc_ref.id,
+            "sent_at": sent_at
+        }
+    except Exception as e:
+        logger.error(f"Failed to log communication to Firestore: {e}")
+        raise HTTPException(status_code=500, detail="Failed to log communication")
 
 
 # ─────────────────────────────────────────────

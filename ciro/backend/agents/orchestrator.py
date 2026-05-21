@@ -469,8 +469,8 @@ Process this through all 8 agents: Multimodal Ingestion -> Crisis Detection -> S
                     f_resp = log_entry.get("content", "")
             return f_resp
 
-        # 45-second timeout for the entire LLM pipeline
-        return await asyncio.wait_for(_run_runner(), timeout=45.0)
+        # 9-agent LLM pipeline needs ~60-120s realistically; allow 180s before bailing.
+        return await asyncio.wait_for(_run_runner(), timeout=180.0)
 
     try:
         final_response = await _execute_pipeline()

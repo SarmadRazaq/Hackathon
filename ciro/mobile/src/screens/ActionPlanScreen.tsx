@@ -7,7 +7,7 @@ import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { auth } from "../services/firebaseConfig";
-import { getActiveCrises } from "../services/api";
+import { getActiveCrises, generateActionPlan } from "../services/api";
 
 const { width } = Dimensions.get("window");
 
@@ -18,11 +18,17 @@ const C = {
     text: "#F8FAFC", textSec: "#94A3B8", border: "#384152aa",
 };
 
-export default function ActionPlanScreen() {
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+export default function ActionPlanScreen({ route, navigation }: any) {
+    const role = route?.params?.role || "reporter";
     const [loading, setLoading] = useState(false);
     const [crises, setCrises] = useState<any[]>([]);
     const [selectedCrisisId, setSelectedCrisisId] = useState<string>("");
     const [plan, setPlan] = useState<any[]>([]);
+    const [executing, setExecuting] = useState(false);
+    const [executingIdx, setExecutingIdx] = useState<number>(-1);
+    const cancelExecRef = React.useRef(false);
 
     const loadCrises = async () => {
         setLoading(true);
@@ -54,15 +60,31 @@ export default function ActionPlanScreen() {
         loadCrises();
     }, []);
 
-    useEffect(() => {
-        if (selectedCrisisId) {
-            // Generate responsive action timeline based on crisis type
-            if (selectedCrisisId === "crisis-1") {
+    const generatePlanForCrisis = async (crisisId: string) => {
+        setLoading(true);
+        try {
+            const crisis = crises.find(c => c.id === crisisId);
+            if (!crisis) return;
+
+            const res = await generateActionPlan(
+                crisis.type || "unknown",
+                crisis.location || "Unknown Location",
+                crisis.severity || "MEDIUM",
+                crisis.description || ""
+            );
+
+            if (res && res.plan) {
+                setPlan(res.plan);
+            }
+        } catch (e) {
+            console.error("Plan generation error", e);
+            // Fallbacks for demo
+            if (crisisId === "crisis-1" || (crises.find(c => c.id === crisisId)?.type?.includes("flood"))) {
                 setPlan([
                     { phase: "Ingestion & Analysis", time: "T+2m", desc: "Citizen reports cross-referenced with WASA and telemetry.", status: "completed" },
                     { phase: "Safety Verification", time: "T+5m", desc: "No prompt injection detected. Location confirmed via geocoding.", status: "completed" },
-                    { phase: "Resource Mobilization", time: "T+15m", desc: "3 dewatering pumps and 2 ambulances dispatched to G-10/2.", status: "active" },
-                    { phase: "Public Alert Broadcast", time: "T+20m", desc: "Bilingual warning broadcast sent to 45,000 residents in the sector.", status: "pending" },
+                    { phase: "Resource Mobilization", time: "T+15m", desc: "3 dewatering pumps and 2 ambulances dispatched to location.", status: "active" },
+                    { phase: "Public Alert Broadcast", time: "T+20m", desc: "Bilingual warning broadcast sent to residents in the sector.", status: "pending" },
                     { phase: "Post-Incident Recovery", time: "T+24h", desc: "Utility restoration, drainage cleanup and damage assessment.", status: "pending" }
                 ]);
             } else {
@@ -73,20 +95,63 @@ export default function ActionPlanScreen() {
                     { phase: "Load-Shedding Moratorium", time: "T+1h", desc: "Requesting grid operator to suspend power cuts during peak index.", status: "pending" }
                 ]);
             }
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        if (selectedCrisisId && crises.length > 0) {
+            generatePlanForCrisis(selectedCrisisId);
         }
     }, [selectedCrisisId]);
 
     const handleStepPress = (idx: number) => {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-        // Toggle step completion for interactive walkthrough
-        setPlan(prev => prev.map((step, i) => {
-            if (i === idx) {
-                const nextStatus = step.status === "completed" ? "active" : step.status === "active" ? "pending" : "completed";
-                return { ...step, status: nextStatus };
-            }
-            return step;
-        }));
+        if (role !== "dispatcher" || executing) return;
+        setPlan(prev => {
+            const next = [...prev];
+            const current = next[idx].status;
+            next[idx].status = current === "pending" ? "active" : current === "active" ? "completed" : "pending";
+            return next;
+        });
     };
+
+    // Live playbook execution — the agent steps through each phase on its own.
+    // Built for demo recording: reset → activate step → wait → complete → next.
+    const executePlaybookLive = async () => {
+        if (executing || plan.length === 0) return;
+        cancelExecRef.current = false;
+        setExecuting(true);
+
+        // Reset every step to pending so the run starts clean.
+        setPlan(prev => prev.map(s => ({ ...s, status: "pending" })));
+        await sleep(700);
+
+        const total = plan.length;
+        for (let i = 0; i < total; i++) {
+            if (cancelExecRef.current) break;
+            setExecutingIdx(i);
+            // Phase goes ACTIVE — agent is working on it.
+            setPlan(prev => prev.map((s, idx) => idx === i ? { ...s, status: "active" } : s));
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+            await sleep(2400);
+            if (cancelExecRef.current) break;
+            // Phase COMPLETED.
+            setPlan(prev => prev.map((s, idx) => idx === i ? { ...s, status: "completed" } : s));
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            await sleep(550);
+        }
+
+        setExecutingIdx(-1);
+        setExecuting(false);
+    };
+
+    useEffect(() => {
+        // Cancel any in-flight execution if the screen unmounts or crisis changes.
+        return () => { cancelExecRef.current = true; };
+    }, [selectedCrisisId]);
+
+    const completedCount = plan.filter(s => s.status === "completed").length;
 
     return (
         <View style={styles.container}>
@@ -125,7 +190,52 @@ export default function ActionPlanScreen() {
                 </View>
             ) : (
                 <ScrollView contentContainerStyle={styles.scroll}>
-                    <Text style={styles.sectionTitle}>Interactive Playbook Checklist</Text>
+                    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                        <Text style={styles.sectionTitle}>Interactive Playbook Checklist</Text>
+                        <TouchableOpacity
+                            onPress={() => generatePlanForCrisis(selectedCrisisId)}
+                            disabled={executing}
+                            style={{ flexDirection: "row", alignItems: "center", backgroundColor: C.primary + "22", paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, borderWidth: 1, borderColor: C.primary + "44", opacity: executing ? 0.4 : 1 }}
+                        >
+                            <Ionicons name="refresh-outline" size={14} color={C.primary} style={{ marginRight: 4 }} />
+                            <Text style={{ color: C.primary, fontSize: 10, fontWeight: "bold" }}>AI Regenerate</Text>
+                        </TouchableOpacity>
+                    </View>
+
+                    {/* Live execution control */}
+                    <TouchableOpacity
+                        onPress={executePlaybookLive}
+                        disabled={executing || plan.length === 0}
+                        activeOpacity={0.8}
+                        style={[styles.execBtn, executing && styles.execBtnRunning]}
+                    >
+                        {executing ? (
+                            <>
+                                <ActivityIndicator size="small" color={C.bg} style={{ marginRight: 8 }} />
+                                <Text style={styles.execBtnText}>
+                                    Agent executing — step {executingIdx + 1} of {plan.length}
+                                </Text>
+                            </>
+                        ) : (
+                            <>
+                                <Ionicons name="play" size={16} color={C.bg} style={{ marginRight: 6 }} />
+                                <Text style={styles.execBtnText}>
+                                    {completedCount === plan.length && plan.length > 0
+                                        ? "Re-run Live Execution"
+                                        : "Execute Playbook Live"}
+                                </Text>
+                            </>
+                        )}
+                    </TouchableOpacity>
+
+                    {/* Progress bar */}
+                    <View style={styles.progressTrack}>
+                        <View style={[styles.progressFill, { width: `${plan.length ? (completedCount / plan.length) * 100 : 0}%` }]} />
+                    </View>
+                    <Text style={styles.progressLabel}>
+                        {completedCount} of {plan.length} response phases completed
+                    </Text>
+                    <View style={{ height: 14 }} />
                     
                     {plan.map((step, idx) => {
                         const isCompleted = step.status === "completed";
@@ -134,6 +244,7 @@ export default function ActionPlanScreen() {
                         return (
                             <TouchableOpacity
                                 key={idx}
+                                activeOpacity={role === "dispatcher" ? 0.7 : 1}
                                 onPress={() => handleStepPress(idx)}
                                 style={[
                                     styles.stepCard, 
@@ -200,5 +311,16 @@ const styles = StyleSheet.create({
     timeBadge: { color: C.primary, fontSize: 12, fontWeight: "700", backgroundColor: C.surfaceEl, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4 },
     stepDesc: { color: C.textSec, fontSize: 13, lineHeight: 18, paddingLeft: 28 },
     loader: { flex: 1, justifyContent: "center", alignItems: "center" },
-    loaderText: { color: C.textSec, marginTop: 12, fontSize: 14 }
+    loaderText: { color: C.textSec, marginTop: 12, fontSize: 14 },
+    execBtn: {
+        flexDirection: "row", alignItems: "center", justifyContent: "center",
+        backgroundColor: C.primary, borderRadius: 12, paddingVertical: 13, marginBottom: 12,
+    },
+    execBtnRunning: { backgroundColor: C.warning },
+    execBtnText: { color: C.bg, fontSize: 14, fontWeight: "800" },
+    progressTrack: {
+        height: 6, backgroundColor: C.surfaceEl, borderRadius: 3, overflow: "hidden",
+    },
+    progressFill: { height: "100%", backgroundColor: C.low, borderRadius: 3 },
+    progressLabel: { color: C.textSec, fontSize: 11, marginTop: 6, fontWeight: "600" },
 });

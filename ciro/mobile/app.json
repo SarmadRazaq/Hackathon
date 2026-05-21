@@ -15,7 +15,6 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.ciro.app",
-      "googleServicesFile": "./GoogleService-Info.plist",
       "infoPlist": {
         "NSCameraUsageDescription": "CIRO needs camera access to capture crisis images.",
         "NSMicrophoneUsageDescription": "CIRO needs microphone access for voice reports.",

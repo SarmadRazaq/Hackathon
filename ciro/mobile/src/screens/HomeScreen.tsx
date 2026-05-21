@@ -14,8 +14,8 @@ import * as FileSystem from "expo-file-system";
 import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
 import * as Location from 'expo-location';
-import MapView, { Marker, Circle, UrlTile } from "react-native-maps";
-import { getScenarios, analyzeCustomStream, analyzeScenarioStream, Scenario, AgentLog, checkHealth, getActiveCrises } from "../services/api";
+import HotspotMap from "../components/HotspotMap";
+import { getScenarios, analyzeCustomStream, analyzeScenarioStream, Scenario, AgentLog, checkHealth, getActiveCrises, getScenarioCacheStatus } from "../services/api";
 import { LinearGradient } from "expo-linear-gradient";
 import { collection, addDoc, query, orderBy, onSnapshot, updateDoc, doc, increment, arrayUnion, getDoc } from "firebase/firestore";
 import { db, auth } from "../services/firebaseConfig";
@@ -161,6 +161,7 @@ export default function HomeScreen({ navigation, route }: any) {
     }, []);
 
     const [scenarios, setScenarios] = useState<Scenario[]>([]);
+    const [cachedIds, setCachedIds] = useState<Set<string>>(new Set());
     const [citizenReports, setCitizenReports] = useState<any[]>([]);
     const [myReports, setMyReports] = useState<any[]>([]);
     const [loading, setLoading] = useState(false);
@@ -169,7 +170,7 @@ export default function HomeScreen({ navigation, route }: any) {
 
     // Multi-Crisis Management state
     const [activeCrises, setActiveCrises] = useState<any[]>([]);
-    const [crisesLoading, setCrisesLoading] = useState(false);
+    const [crisesLoading, setCrisesLoading] = useState(true);
 
     // Search + filter (dispatcher reports tab)
     const [reportSearch, setReportSearch] = useState("");
@@ -275,15 +276,25 @@ export default function HomeScreen({ navigation, route }: any) {
                 Alert.alert("Location Access", "Enable location permission to auto-fill your area.");
                 return;
             }
-            const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+
+            // On Emulators, location fetching can hang forever. We race with a 5s timeout.
+            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 5000));
+            const posPromise = Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Lowest });
+            const pos = await Promise.race([posPromise, timeoutPromise]) as any;
+
             const results = await Location.reverseGeocodeAsync(pos.coords);
             const geo = results[0];
-            const city = geo?.city || geo?.subregion || geo?.region || "Unknown";
+            const city = geo?.city || geo?.subregion || geo?.region || "Islamabad";
+            
             setWeatherLoc(city);
             setTrafficLoc(city);
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        } catch {
-            Alert.alert("Location Error", "Failed to detect location. Try entering it manually.");
+        } catch (err: any) {
+            console.warn("Location detection failed, falling back to test location:", err);
+            // Fallback for emulator testing
+            setWeatherLoc("Islamabad");
+            setTrafficLoc("Islamabad");
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         } finally {
             setDetectingGps(false);
         }
@@ -361,38 +372,79 @@ export default function HomeScreen({ navigation, route }: any) {
 
         loadScenarios();
 
-        // Fetch active crises for dispatcher multi-crisis dashboard (REAL-TIME from Firestore)
+        // Fetch active crises for dispatcher multi-crisis dashboard (REAL-TIME from Firestore).
+        // Merges two collections: `crises` (clean, dispatcher-authored) and `incidents`
+        // (pipeline runs). Both are normalized into a single flat shape.
         if (role === "dispatcher") {
-            // Show demo data immediately while waiting for Firestore
-            setActiveCrises([
-                { id: "crisis-1", title: "Flash Flood — G-10 Islamabad", type: "flood", severity: "CRITICAL", location: "G-10, Islamabad", affected_population: 4500, detected_at: new Date(Date.now() - 12 * 60000).toISOString(), status: "active" },
-                { id: "crisis-2", title: "Heat Emergency — Karachi", type: "heat", severity: "HIGH", location: "Saddar, Karachi", affected_population: 8200, detected_at: new Date(Date.now() - 45 * 60000).toISOString(), status: "active" },
-                { id: "crisis-3", title: "Traffic Accident — Gulberg", type: "accident", severity: "MEDIUM", location: "Gulberg, Lahore", affected_population: 2000, detected_at: new Date(Date.now() - 5 * 60000).toISOString(), status: "active" },
-            ]);
+            setCrisesLoading(true);
 
-            // Listen to real-time Firestore incidents collection
-            const unsubscribeCrises = onSnapshot(
-                query(collection(db, "incidents")),
-                (snapshot) => {
-                    const crises: any[] = [];
-                    snapshot.forEach((docSnap) => {
-                        crises.push({ id: docSnap.id, ...docSnap.data() });
-                    });
-                    // Replace demo data with real data if any exists
-                    if (crises.length > 0) {
-                        setCrisesLoading(false);
-                        setActiveCrises(crises);
+            let crisesDocs: any[] = [];
+            let incidentDocs: any[] = [];
+
+            const publish = () => {
+                // crisesDocs first so the clean `crises` collection wins over
+                // duplicate `incidents` rows for the same logical crisis.
+                const merged = [...crisesDocs, ...incidentDocs].map(normalizeCrisis);
+                // Dedup by content (type + location), not id — the incidents
+                // collection accumulates many rows for the same crisis.
+                const byKey = new Map<string, any>();
+                const sevRank: Record<string, number> = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1 };
+                merged.forEach((c) => {
+                    const key = `${c.type}|${(c.location || "").toLowerCase().trim()}`;
+                    const existing = byKey.get(key);
+                    if (!existing) {
+                        byKey.set(key, c);
+                    } else if ((sevRank[c.severity] || 0) > (sevRank[existing.severity] || 0)) {
+                        // Keep the higher-severity version of a duplicated crisis.
+                        byKey.set(key, c);
                     }
+                });
+                // Newest first.
+                const list = Array.from(byKey.values()).sort((a, b) => {
+                    const ta = new Date(a.detected_at || 0).getTime() || 0;
+                    const tb = new Date(b.detected_at || 0).getTime() || 0;
+                    return tb - ta;
+                });
+                setActiveCrises(list);
+                setCrisesLoading(false);
+            };
+
+            const unsubCrises = onSnapshot(
+                query(collection(db, "crises")),
+                (snap) => {
+                    crisesDocs = [];
+                    snap.forEach((d) => crisesDocs.push({ id: d.id, ...d.data() }));
+                    publish();
                 },
-                (err) => {
-                    console.error("Firestore crisis listener error:", err);
-                    setCrisesLoading(false);
-                }
+                (err) => { console.error("crises listener error:", err); setCrisesLoading(false); }
+            );
+
+            const unsubIncidents = onSnapshot(
+                query(collection(db, "incidents")),
+                (snap) => {
+                    incidentDocs = [];
+                    snap.forEach((d) => incidentDocs.push({ id: d.id, ...d.data() }));
+                    publish();
+                },
+                (err) => { console.error("incidents listener error:", err); setCrisesLoading(false); }
+            );
+
+            // Dispatchers also need the citizen-reports feed for the "Citizen Reports" tab.
+            const unsubDispatcherReports = onSnapshot(
+                query(collection(db, "reports"), orderBy("createdAt", "desc")),
+                (snapshot) => {
+                    const reps: any[] = [];
+                    snapshot.forEach((docSnap) => reps.push({ id: docSnap.id, ...docSnap.data() }));
+                    setCitizenReports(reps);
+                },
+                (err) => console.error("dispatcher reports listener error:", err)
             );
 
             return () => {
                 if (abortStreamRef.current) abortStreamRef.current();
-                unsubscribeCrises();
+                unsubCrises();
+                unsubIncidents();
+                unsubDispatcherReports();
             };
         }
 
@@ -470,6 +522,10 @@ export default function HomeScreen({ navigation, route }: any) {
         try {
             const data = await getScenarios();
             setScenarios(data);
+            try {
+                const status = await getScenarioCacheStatus();
+                setCachedIds(new Set(status.cached_scenarios));
+            } catch { /* ignore cache err */ }
         } catch {
             setScenarios([
                 { id: "dual-flood-heat", title: "⚡ DUAL CRISIS — Flood + Heat", description: "Two simultaneous crises, shared resources", icon: "⚡", severity_hint: "CRITICAL" },
@@ -691,13 +747,91 @@ export default function HomeScreen({ navigation, route }: any) {
         storm: "⛈️", landslide: "🏔️", epidemic: "🦠", power: "⚡", default: "⚠️",
     };
 
-    const getTimeSince = (dateStr: string) => {
-        const mins = Math.floor((Date.now() - new Date(dateStr).getTime()) / 60000);
+    // Collapses the many raw type strings the backend/seed emit into the
+    // canonical keys CRISIS_TYPE_EMOJI and SEVERITY_COLORS understand.
+    const canonicalType = (raw?: string): string => {
+        const t = (raw || "").toLowerCase();
+        if (t.includes("flood") || t.includes("nullah") || t.includes("water")) return "flood";
+        if (t.includes("heat")) return "heat";
+        if (t.includes("fire")) return "fire";
+        if (t.includes("accident") || t.includes("collision") || t.includes("crash")) return "accident";
+        if (t.includes("earthquake") || t.includes("seismic") || t.includes("quake")) return "earthquake";
+        if (t.includes("landslide") || t.includes("avalanche")) return "landslide";
+        if (t.includes("storm") || t.includes("cyclone")) return "storm";
+        if (t.includes("epidemic") || t.includes("disease") || t.includes("outbreak")) return "epidemic";
+        if (t.includes("power") || t.includes("infrastructure") || t.includes("outage")) return "power";
+        return "default";
+    };
+
+    const getTimeSince = (dateStr?: string) => {
+        if (!dateStr) return "Recently";
+        const t = new Date(dateStr).getTime();
+        if (isNaN(t)) return "Recently";
+        const mins = Math.floor((Date.now() - t) / 60000);
+        if (mins < 0) return "Just now";
         if (mins < 1) return "Just now";
         if (mins < 60) return `${mins}m ago`;
         const hrs = Math.floor(mins / 60);
         if (hrs < 24) return `${hrs}h ago`;
         return `${Math.floor(hrs / 24)}d ago`;
+    };
+
+    const TYPE_TITLES: Record<string, string> = {
+        flood: "Flash Flood", heat: "Heat Emergency", fire: "Fire Emergency",
+        accident: "Traffic Accident", earthquake: "Seismic Activity",
+        landslide: "Landslide", storm: "Severe Storm", epidemic: "Disease Cluster",
+        power: "Infrastructure Failure", default: "Incident",
+    };
+
+    // Normalizes a Firestore doc (clean `crises` shape OR nested `incidents`
+    // pipeline shape) into the flat structure the dispatcher card expects.
+    // `type` is always a canonical key.
+    const normalizeCrisis = (doc: any): any => {
+        // Already-clean shape from the `crises` collection.
+        if (doc.title && doc.severity && doc.location) {
+            const ct = canonicalType(doc.type || doc.title);
+            return {
+                ...doc,
+                type: ct,
+                detected_at: doc.detected_at || doc.createdAt || doc.timestamp,
+            };
+        }
+        // Nested pipeline shape from the `incidents` collection.
+        const input = doc.input || {};
+        const outputs = doc.agent_outputs || {};
+        let rawType = "";
+        let confidence = 0;
+        let urgency: string | undefined;
+        try {
+            const sig = JSON.parse(outputs.ingested_signals || "{}");
+            if (sig.crisis_type) rawType = sig.crisis_type;
+            if (typeof sig.confidence === "number") confidence = sig.confidence;
+            if (sig.urgency) urgency = sig.urgency;
+        } catch { /* keep defaults */ }
+
+        const location = input.weather_location || input.traffic_location || "Unknown Location";
+        const type = canonicalType(rawType || input.social_media_text || location);
+
+        const assessment = (outputs.crisis_assessment || "").toUpperCase();
+        let severity = "MEDIUM";
+        if (assessment.includes("CRITICAL")) severity = "CRITICAL";
+        else if (assessment.includes("HIGH")) severity = "HIGH";
+        else if (assessment.includes("LOW")) severity = "LOW";
+
+        return {
+            id: doc.id,
+            type,
+            title: `${TYPE_TITLES[type] || "Incident"} — ${location}`,
+            location,
+            severity,
+            urgency,
+            confidence,
+            status: "active",
+            detected_at: doc.createdAt || doc.timestamp || doc.detected_at,
+            description: input.social_media_text || outputs.situation_report || "",
+            affected_population: doc.affected_population,
+            agent_outputs: outputs,
+        };
     };
 
     const TAB_CONFIG = role === "dispatcher"
@@ -780,41 +914,10 @@ export default function HomeScreen({ navigation, route }: any) {
 
                         {/* Scrollable Navigation Items */}
                         <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
-                            {/* Main Tabs Section */}
-                            <Text style={{ color: COLORS.textSecondary, fontSize: 10, fontWeight: "800", letterSpacing: 0.8, marginBottom: 10, marginLeft: 4, textTransform: "uppercase" }}>Navigation</Text>
-                            {TAB_CONFIG.map((tab) => (
-                                <TouchableOpacity
-                                    key={tab.key}
-                                    style={{
-                                        flexDirection: "row",
-                                        alignItems: "center",
-                                        gap: 12,
-                                        paddingVertical: 11,
-                                        paddingHorizontal: 12,
-                                        marginBottom: 4,
-                                        borderRadius: 10,
-                                        backgroundColor: activeTab === tab.key ? COLORS.primary + "18" : "transparent",
-                                        borderLeftWidth: activeTab === tab.key ? 3 : 0,
-                                        borderLeftColor: activeTab === tab.key ? COLORS.primary : "transparent"
-                                    }}
-                                    onPress={() => {
-                                        setActiveTab(tab.key);
-                                        toggleDrawer(false);
-                                    }}
-                                >
-                                    <Ionicons name={tab.icon as any} size={18} color={activeTab === tab.key ? COLORS.primary : COLORS.textSecondary} />
-                                    <Text style={{ color: activeTab === tab.key ? COLORS.primary : COLORS.textPrimary, fontWeight: activeTab === tab.key ? "700" : "500", fontSize: 13, flex: 1 }}>{tab.label}</Text>
-                                    {activeTab === tab.key && <Ionicons name="chevron-forward" size={14} color={COLORS.primary} />}
-                                </TouchableOpacity>
-                            ))}
-
-                            <View style={{ height: 12 }} />
-                            <View style={{ height: 1, backgroundColor: COLORS.border, marginBottom: 14 }} />
-
                             {/* Monitoring & Analytics */}
                             <Text style={{ color: COLORS.textSecondary, fontSize: 10, fontWeight: "800", letterSpacing: 0.8, marginBottom: 10, marginLeft: 4, textTransform: "uppercase" }}>Monitoring</Text>
                             {[
-                                { icon: "pie-chart-outline", label: "System Analytics", nav: "Analytics" },
+                                ...(role === "dispatcher" ? [{ icon: "pie-chart-outline", label: "System Analytics", nav: "Analytics" }] : []),
                                 { icon: "map-outline", label: "Interactive Map", nav: "Map" },
                                 { icon: "megaphone-outline", label: "Public Bulletin", nav: "PublicDashboard" }
                             ].map((item) => (
@@ -835,31 +938,36 @@ export default function HomeScreen({ navigation, route }: any) {
                             <View style={{ height: 12 }} />
                             <View style={{ height: 1, backgroundColor: COLORS.border, marginBottom: 14 }} />
 
-                            {/* Response & Decision */}
-                            <Text style={{ color: COLORS.textSecondary, fontSize: 10, fontWeight: "800", letterSpacing: 0.8, marginBottom: 10, marginLeft: 4, textTransform: "uppercase" }}>Response</Text>
-                            {[
-                                { icon: "git-compare-outline", label: "Agent vs Rules", nav: "Comparison" },
-                                { icon: "cube-outline", label: "Resource Pool", nav: "Resources" },
-                                { icon: "analytics-outline", label: "Impact Analysis", nav: "Impact" },
-                                { icon: "chatbubbles-outline", label: "Stakeholder Comms", nav: "Comms" },
-                                { icon: "list-outline", label: "Action Plan", nav: "ActionPlan" }
-                            ].map((item) => (
-                                <TouchableOpacity
-                                    key={item.nav}
-                                    style={{ flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 11, paddingHorizontal: 12, marginBottom: 4, borderRadius: 10 }}
-                                    onPress={() => {
-                                        toggleDrawer(false);
-                                        navigation.navigate(item.nav as any);
-                                    }}
-                                >
-                                    <Ionicons name={item.icon as any} size={18} color={COLORS.textSecondary} />
-                                    <Text style={{ color: COLORS.textPrimary, fontWeight: "500", fontSize: 13, flex: 1 }}>{item.label}</Text>
-                                    <Ionicons name="chevron-forward" size={14} color={COLORS.textSecondary + "66"} />
-                                </TouchableOpacity>
-                            ))}
+                            {role === "dispatcher" && (
+                                <>
+                                    {/* Response & Decision */}
+                                    <Text style={{ color: COLORS.textSecondary, fontSize: 10, fontWeight: "800", letterSpacing: 0.8, marginBottom: 10, marginLeft: 4, textTransform: "uppercase" }}>Response</Text>
+                                    {[
+                                        { icon: "git-compare-outline", label: "Agent vs Rules", nav: "Comparison" },
+                                        { icon: "cube-outline", label: "Resource Pool", nav: "Resources" },
+                                        { icon: "analytics-outline", label: "Impact Analysis", nav: "Impact" },
+                                        { icon: "chatbubbles-outline", label: "Stakeholder Comms", nav: "Comms" },
+                                        { icon: "list-outline", label: "Action Plan", nav: "ActionPlan" },
+                                        { icon: "flash-outline", label: "Test Mode", nav: "TestMode" }
+                                    ].map((item) => (
+                                        <TouchableOpacity
+                                            key={item.nav}
+                                            style={{ flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 11, paddingHorizontal: 12, marginBottom: 4, borderRadius: 10 }}
+                                            onPress={() => {
+                                                toggleDrawer(false);
+                                                navigation.navigate(item.nav as any, { role });
+                                            }}
+                                        >
+                                            <Ionicons name={item.icon as any} size={18} color={COLORS.textSecondary} />
+                                            <Text style={{ color: COLORS.textPrimary, fontWeight: "500", fontSize: 13, flex: 1 }}>{item.label}</Text>
+                                            <Ionicons name="chevron-forward" size={14} color={COLORS.textSecondary + "66"} />
+                                        </TouchableOpacity>
+                                    ))}
 
-                            <View style={{ height: 12 }} />
-                            <View style={{ height: 1, backgroundColor: COLORS.border, marginBottom: 14 }} />
+                                    <View style={{ height: 12 }} />
+                                    <View style={{ height: 1, backgroundColor: COLORS.border, marginBottom: 14 }} />
+                                </>
+                            )}
 
                             {/* Settings */}
                             <Text style={{ color: COLORS.textSecondary, fontSize: 10, fontWeight: "800", letterSpacing: 0.8, marginBottom: 10, marginLeft: 4, textTransform: "uppercase" }}>Settings</Text>
@@ -1093,7 +1201,12 @@ export default function HomeScreen({ navigation, route }: any) {
                             </View>
                         </View>
 
-                        {activeCrises.length === 0 ? (
+                        {crisesLoading ? (
+                            <View style={[styles.emptyState, { minHeight: 200 }]}>
+                                <ActivityIndicator size="large" color={COLORS.primary} />
+                                <Text style={[styles.emptyText, { marginTop: 16 }]}>Loading active crises...</Text>
+                            </View>
+                        ) : activeCrises.length === 0 ? (
                             <View style={styles.emptyState}>
                                 <Ionicons name="shield-checkmark-outline" size={48} color={COLORS.low + "33"} />
                                 <Text style={styles.emptyText}>No active crises detected. All clear! ✅</Text>
@@ -1204,8 +1317,15 @@ export default function HomeScreen({ navigation, route }: any) {
                                         <Text style={styles.scenarioTitle}>{s.title}</Text>
                                         <Text style={styles.scenarioDesc}>{s.description}</Text>
                                     </View>
-                                    <View style={[styles.severityBadge, { backgroundColor: SEVERITY_COLORS[s.severity_hint] + "22", borderColor: SEVERITY_COLORS[s.severity_hint] }]}>
-                                        <Text style={[styles.severityText, { color: SEVERITY_COLORS[s.severity_hint] }]}>{s.severity_hint}</Text>
+                                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                        <View style={[styles.severityBadge, { backgroundColor: SEVERITY_COLORS[s.severity_hint] + "22", borderColor: SEVERITY_COLORS[s.severity_hint] }]}>
+                                            <Text style={[styles.severityText, { color: SEVERITY_COLORS[s.severity_hint] }]}>{s.severity_hint}</Text>
+                                        </View>
+                                        {cachedIds.has(s.id) && (
+                                            <View style={[styles.severityBadge, { backgroundColor: COLORS.low + "22", borderColor: COLORS.low, marginLeft: 6 }]}>
+                                                <Text style={[styles.severityText, { color: COLORS.low }]}>⚡ Pre-warmed</Text>
+                                            </View>
+                                        )}
                                     </View>
                                 </View>
                                 {loading && loadingId === s.id && (
@@ -1337,7 +1457,7 @@ export default function HomeScreen({ navigation, route }: any) {
                                             const status = report.status || "pending";
                                             const statusConfig: Record<string, { icon: string; color: string; label: string }> = {
                                                 pending: { icon: "🕒", color: COLORS.warning, label: "Submitted" },
-                                                processing: { icon: "🔄", color: COLORS.info, label: "Processing" },
+                                                processing: { icon: "🔄", color: COLORS.info, label: "Escalated" },
                                                 dispatched: { icon: "✅", color: COLORS.primary, label: "Dispatched" },
                                                 resolved: { icon: "🚑", color: COLORS.low, label: "Help Arriving" },
                                             };
@@ -1403,13 +1523,12 @@ export default function HomeScreen({ navigation, route }: any) {
                                 <Text style={styles.sectionTitle}><Ionicons name="map" size={18} color={COLORS.warning} /> Nearby Reports</Text>
                                 <Text style={styles.sectionDesc}>Help NDMA verify active crises in your area</Text>
 
-                                {/* ── MapView ── */}
+                                {/* ── Map (Leaflet via WebView) ── */}
                                 {(() => {
                                     const nearbyMarkers = citizenReports.map((r) => {
                                         const loc = r.traffic_location || r.weather_location || "";
                                         for (const [key, val] of Object.entries(GEO_LOOKUP)) {
                                             if (loc.includes(key)) {
-                                                // Extract severity from pipelineResult if available
                                                 let sev = "MEDIUM";
                                                 if (r.pipelineResult) {
                                                     try {
@@ -1421,6 +1540,7 @@ export default function HomeScreen({ navigation, route }: any) {
                                                     } catch { /* keep MEDIUM default */ }
                                                 }
                                                 return {
+                                                    id: r.id,
                                                     lat: val.lat + (Math.random() - 0.5) * 0.01,
                                                     lng: val.lng + (Math.random() - 0.5) * 0.01,
                                                     severity: sev,
@@ -1430,59 +1550,39 @@ export default function HomeScreen({ navigation, route }: any) {
                                             }
                                         }
                                         return null;
-                                    }).filter(Boolean) as { lat: number; lng: number; severity: string; title: string; report: any }[];
+                                    }).filter(Boolean) as { id: string; lat: number; lng: number; severity: string; title: string; report: any }[];
 
                                     return (
-                                        <View style={{ height: 280, borderRadius: 14, overflow: "hidden", borderWidth: 1, borderColor: COLORS.border, marginBottom: 16 }}>
-                                            <MapView
-                                                style={{ flex: 1 }}
-                                                initialRegion={{
-                                                    latitude: 30.3753,
-                                                    longitude: 69.3451,
-                                                    latitudeDelta: 10,
-                                                    longitudeDelta: 10,
+                                        <View style={{ marginBottom: 16 }}>
+                                            <HotspotMap
+                                                markers={nearbyMarkers.map((m) => ({
+                                                    id: m.id,
+                                                    lat: m.lat,
+                                                    lng: m.lng,
+                                                    severity: m.severity,
+                                                    title: m.title,
+                                                }))}
+                                                height={280}
+                                                onMarkerPress={(id) => {
+                                                    const m = nearbyMarkers.find((x) => x.id === id);
+                                                    if (!m) return;
+                                                    if (m.report.pipelineResult) {
+                                                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                                                        try {
+                                                            const parsed = JSON.parse(m.report.pipelineResult);
+                                                            navigation.navigate("Result", { report: parsed });
+                                                        } catch {
+                                                            Alert.alert("Error", "Failed to load response result.");
+                                                        }
+                                                    } else {
+                                                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                                        Alert.alert(
+                                                            "Incident Verification",
+                                                            `This report for ${m.report.traffic_location || "selected area"} is currently ${m.report.status || "pending"}.\n\nTapping "Confirm" adds your community upvote, prompting NDMA operators to run the response pipeline!`
+                                                        );
+                                                    }
                                                 }}
-                                                userInterfaceStyle="dark"
-                                            >
-                                                {nearbyMarkers.map((marker, i) => (
-                                                    <React.Fragment key={i}>
-                                                        <Marker
-                                                            coordinate={{ latitude: marker.lat, longitude: marker.lng }}
-                                                            title={marker.title}
-                                                            onPress={() => {
-                                                                if (marker.report.pipelineResult) {
-                                                                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                                                                    try {
-                                                                        const parsed = JSON.parse(marker.report.pipelineResult);
-                                                                        navigation.navigate("Result", { report: parsed });
-                                                                    } catch {
-                                                                        Alert.alert("Error", "Failed to load response result.");
-                                                                    }
-                                                                } else {
-                                                                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                                                                    Alert.alert(
-                                                                        "Incident Verification",
-                                                                        `This report for ${marker.report.traffic_location || "selected area"} is currently ${marker.report.status || "pending"}.\n\nTapping "Confirm" adds your community upvote, prompting NDMA operators to run the response pipeline!`
-                                                                    );
-                                                                }
-                                                            }}
-                                                        >
-                                                            <View style={{
-                                                                width: 14, height: 14, borderRadius: 7,
-                                                                backgroundColor: SEVERITY_COLORS[marker.severity] || COLORS.info,
-                                                                borderWidth: 2, borderColor: '#fff',
-                                                            }} />
-                                                        </Marker>
-                                                        <Circle
-                                                            center={{ latitude: marker.lat, longitude: marker.lng }}
-                                                            radius={15000}
-                                                            fillColor={(SEVERITY_COLORS[marker.severity] || COLORS.info) + "22"}
-                                                            strokeColor={(SEVERITY_COLORS[marker.severity] || COLORS.info) + "44"}
-                                                            strokeWidth={1}
-                                                        />
-                                                    </React.Fragment>
-                                                ))}
-                                            </MapView>
+                                            />
                                         </View>
                                     );
                                 })()}

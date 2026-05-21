@@ -9,6 +9,7 @@ import * as Haptics from "expo-haptics";
 import { collection, query, orderBy, onSnapshot } from "firebase/firestore";
 import { db, auth } from "../services/firebaseConfig";
 import { getActiveCrises } from "../services/api";
+import HotspotMap from "../components/HotspotMap";
 
 const { width, height } = Dimensions.get("window");
 
@@ -169,6 +170,65 @@ export default function MapScreen({ navigation }: any) {
                         contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
                         scrollEnabled={true}
                     >
+                        {/* ── Crisis Intelligence Map ── */}
+                        {(() => {
+                            const mapMarkers: { id: string; lat: number; lng: number; severity: string; title: string; emoji?: string; tap: any }[] = [];
+
+                            if (selectedFilter !== "reports") {
+                                filteredCrises.forEach((c) => {
+                                    let lat = c.coordinates?.lat, lng = c.coordinates?.lng;
+                                    if (lat == null || lng == null) {
+                                        for (const [key, val] of Object.entries(GEO_LOOKUP)) {
+                                            if ((c.location || "").includes(key)) { lat = val.lat; lng = val.lng; break; }
+                                        }
+                                    }
+                                    if (lat != null && lng != null) {
+                                        mapMarkers.push({
+                                            id: `crisis-${c.id}`, lat, lng,
+                                            severity: c.severity || "MEDIUM",
+                                            title: c.title || c.type || "Active Crisis",
+                                            emoji: getCrisisEmoji(c.type),
+                                            tap: c,
+                                        });
+                                    }
+                                });
+                            }
+                            if (showCitizenReports) {
+                                reports.forEach((r) => {
+                                    const loc = r.traffic_location || r.weather_location || "";
+                                    for (const [key, val] of Object.entries(GEO_LOOKUP)) {
+                                        if (loc.includes(key)) {
+                                            mapMarkers.push({
+                                                id: `report-${r.id}`,
+                                                lat: val.lat + (Math.random() - 0.5) * 0.01,
+                                                lng: val.lng + (Math.random() - 0.5) * 0.01,
+                                                severity: "MEDIUM",
+                                                title: `${loc} — ${r.status || "pending"}`,
+                                                tap: r,
+                                            });
+                                            break;
+                                        }
+                                    }
+                                });
+                            }
+
+                            return (
+                                <View style={{ marginBottom: 16 }}>
+                                    <HotspotMap
+                                        markers={mapMarkers.map((m) => ({
+                                            id: m.id, lat: m.lat, lng: m.lng,
+                                            severity: m.severity, title: m.title, emoji: m.emoji,
+                                        }))}
+                                        height={260}
+                                        onMarkerPress={(id) => {
+                                            const m = mapMarkers.find((x) => x.id === id);
+                                            if (m) handleMarkerPress(m.tap);
+                                        }}
+                                    />
+                                </View>
+                            );
+                        })()}
+
                         {/* Crises List */}
                         {selectedFilter !== "reports" && filteredCrises.length > 0 && (
                             <>

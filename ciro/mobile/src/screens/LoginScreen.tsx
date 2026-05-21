@@ -167,6 +167,13 @@ export default function LoginScreen({ navigation }: any) {
             </TouchableOpacity>
           </View>
 
+          <TouchableOpacity
+            onPress={() => { setResetEmail(email); setResetModalVisible(true); }}
+            style={styles.forgotLink}
+          >
+            <Text style={[styles.linkText, { color: C.accent }]}>Forgot Password?</Text>
+          </TouchableOpacity>
+
           {loading && (
             <View style={styles.progressBarContainer}>
               <Animated.View style={[styles.progressBarFill, { width: progressWidth as any }]}>
@@ -202,13 +209,6 @@ export default function LoginScreen({ navigation }: any) {
                 </View>
               )}
             </LinearGradient>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            onPress={() => { setResetEmail(email); setResetModalVisible(true); }}
-            style={styles.forgotLink}
-          >
-            <Text style={[styles.linkText, { color: C.accent }]}>Forgot Password?</Text>
           </TouchableOpacity>
 
           <TouchableOpacity onPress={() => navigation.navigate("Register")} style={styles.registerLink}>

@@ -55,10 +55,11 @@ const TAB_ICONS: Record<string, string> = {
     "Stakeholders": "megaphone-outline",
     "Ticket": "barcode-outline",
     "Resources": "cube-outline",
-    "Impact": "trending-down-outline"
+    "Impact": "trending-down-outline",
+    "Agent Comms": "chatbubbles-outline"
 };
 
-const TABS = ["Overview", "Map", "Action Plan", "The Council", "Simulation", "Stakeholders", "Ticket", "Resources", "Impact"];
+const TABS = ["Overview", "Agent Comms", "Action Plan", "Map", "The Council", "Simulation", "Stakeholders", "Ticket", "Resources", "Impact"];
 
 // Hardcoded coordinates for hackathon scenarios to avoid needing a Geocoding API
 const GEO_LOOKUP: Record<string, { lat: number, lng: number }> = {
@@ -68,6 +69,25 @@ const GEO_LOOKUP: Record<string, { lat: number, lng: number }> = {
     "Saddar": { lat: 24.8587, lng: 67.0182 },
     "Gulberg": { lat: 31.5102, lng: 74.3441 },
 };
+
+// react-native-maps crashes ("AIRMapPolyline ... null latitude") if any
+// coordinate has a null/NaN lat or lng. These helpers guarantee clean input.
+type LatLng = { latitude: number; longitude: number };
+
+function toLatLng(p: any): LatLng | null {
+    if (!p || typeof p !== "object") return null;
+    const lat = p.latitude ?? p.lat;
+    const lng = p.longitude ?? p.lng;
+    if (typeof lat !== "number" || typeof lng !== "number") return null;
+    if (isNaN(lat) || isNaN(lng)) return null;
+    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+    return { latitude: lat, longitude: lng };
+}
+
+function sanitizeRoute(arr: any): LatLng[] {
+    if (!Array.isArray(arr)) return [];
+    return arr.map(toLatLng).filter((p): p is LatLng => p !== null);
+}
 
 export default function ResultScreen({ route, navigation }: any) {
     const { report } = route.params;
@@ -170,13 +190,13 @@ export default function ResultScreen({ route, navigation }: any) {
         }
     }
 
-    let polygonCoords: any[] = [];
+    let polygonCoords: LatLng[] = [];
     if (outputs.situation_report) {
         const polyMatch = outputs.situation_report.match(/__POLYGON__:\s*(\[[\s\S]*?\])/);
         if (polyMatch && polyMatch[1]) {
             try {
                 let cleanStr = polyMatch[1].replace(/```json/g, '').replace(/```/g, '').trim();
-                polygonCoords = JSON.parse(cleanStr);
+                polygonCoords = sanitizeRoute(JSON.parse(cleanStr));
             } catch (e) {
                 console.log("Polygon parsing failed", e);
             }
@@ -856,7 +876,14 @@ export default function ResultScreen({ route, navigation }: any) {
 
     useEffect(() => {
         if (rescueData && !ambCoords) {
-            setAmbCoords({ lat: rescueData.start_lat, lng: rescueData.start_lng });
+            // Rescue data may carry explicit start coords OR a route array.
+            let start: LatLng | null = toLatLng({ lat: rescueData.start_lat, lng: rescueData.start_lng });
+            if (!start && Array.isArray(rescueData.route) && rescueData.route.length > 0) {
+                start = toLatLng(rescueData.route[0]);
+            }
+            if (start) {
+                setAmbCoords({ lat: start.latitude, lng: start.longitude });
+            }
         }
     }, [rescueData]);
 
@@ -1657,41 +1684,49 @@ export default function ResultScreen({ route, navigation }: any) {
                                     strokeWidth={2}
                                 />
                             )}
-                            {rescueData && ambCoords && (
-                                <>
+                            {(() => {
+                                const ambLatLng = toLatLng(ambCoords);
+                                const epicentre = toLatLng(coords);
+                                if (!rescueData || !ambLatLng || !epicentre) return null;
+                                return (
+                                    <>
+                                        <Polyline
+                                            coordinates={[ambLatLng, epicentre]}
+                                            strokeColor={C.primary}
+                                            strokeWidth={3}
+                                            lineDashPattern={[5, 5]}
+                                        />
+                                        <Marker
+                                            coordinate={ambLatLng}
+                                            title={rescueData.unit || "Rescue Unit"}
+                                            description={rescueData.eta_mins ? `ETA: ${rescueData.eta_mins} mins` : undefined}
+                                        >
+                                            <Text style={{ fontSize: 24 }}>🚑</Text>
+                                        </Marker>
+                                    </>
+                                );
+                            })()}
+                            {(() => {
+                                const orig = sanitizeRoute(impactMetrics?.original_route);
+                                return orig.length >= 2 ? (
                                     <Polyline
-                                        coordinates={[
-                                            { latitude: rescueData.start_lat, longitude: rescueData.start_lng },
-                                            { latitude: coords.lat, longitude: coords.lng }
-                                        ]}
-                                        strokeColor={C.primary}
-                                        strokeWidth={3}
-                                        lineDashPattern={[5, 5]}
+                                        coordinates={orig}
+                                        strokeColor={C.danger}
+                                        strokeWidth={4}
+                                        lineDashPattern={[10, 5]}
                                     />
-                                    <Marker
-                                        coordinate={{ latitude: ambCoords.lat, longitude: ambCoords.lng }}
-                                        title={rescueData.unit}
-                                        description={`ETA: ${rescueData.eta_mins} mins`}
-                                    >
-                                        <Text style={{ fontSize: 24 }}>🚑</Text>
-                                    </Marker>
-                                </>
-                            )}
-                            {impactMetrics?.original_route && (
-                                <Polyline
-                                    coordinates={impactMetrics.original_route}
-                                    strokeColor={C.danger}
-                                    strokeWidth={4}
-                                    lineDashPattern={[10, 5]}
-                                />
-                            )}
-                            {impactMetrics?.new_route && (
-                                <Polyline
-                                    coordinates={impactMetrics.new_route}
-                                    strokeColor={C.primary}
-                                    strokeWidth={4}
-                                />
-                            )}
+                                ) : null;
+                            })()}
+                            {(() => {
+                                const next = sanitizeRoute(impactMetrics?.new_route);
+                                return next.length >= 2 ? (
+                                    <Polyline
+                                        coordinates={next}
+                                        strokeColor={C.primary}
+                                        strokeWidth={4}
+                                    />
+                                ) : null;
+                            })()}
                         </MapView>
                         <View style={styles.mapOverlay}>
                             <Text style={styles.mapOverlayText}>Crisis Zone: {detectedSeverity}</Text>
@@ -2764,6 +2799,176 @@ export default function ResultScreen({ route, navigation }: any) {
         );
     };
 
+    const renderAgentComms = () => {
+        const AGENT_DEFS: { key: string; name: string; role: string; icon: string; color: string }[] = [
+            { key: "ingested_signals", name: "Multimodal Ingestor", role: "Signal Fusion & Data Ingestion", icon: "scan-outline", color: "#0A84FF" },
+            { key: "crisis_assessment", name: "Crisis Detector", role: "Threat Classification & Severity", icon: "alert-circle-outline", color: "#FF5252" },
+            { key: "situation_report", name: "Situation Analyst", role: "Contextual Analysis & Briefing", icon: "analytics-outline", color: "#FFAE00" },
+            { key: "rescue_advocacy", name: "Rescue Advocate", role: "Life-Safety Resource Negotiation", icon: "medkit-outline", color: "#30D158" },
+            { key: "infra_advocacy", name: "Infrastructure Advocate", role: "Infrastructure & Logistics Negotiation", icon: "construct-outline", color: "#FF9F0A" },
+            { key: "verified_plan", name: "Response Arbiter", role: "Plan Arbitration & Verification", icon: "shield-checkmark-outline", color: "#BF5AF2" },
+            { key: "evolution_projection", name: "Evolution Projector", role: "Crisis Trajectory Forecasting", icon: "trending-up-outline", color: "#64D2FF" },
+            { key: "simulation_results", name: "Execution Simulator", role: "Response Simulation & Dispatch", icon: "rocket-outline", color: "#FF6482" },
+        ];
+
+        // For verified_plan, also check action_plan as fallback
+        const getAgentOutput = (key: string): string => {
+            if (key === "verified_plan") {
+                return outputs.verified_plan || outputs.action_plan || "";
+            }
+            return outputs[key] || "";
+        };
+
+        const agentLogs: any[] = report.agent_logs || [];
+        const timestamp = meta.timestamp || meta.created_at || new Date().toISOString();
+        const displayTime = (() => {
+            try { return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); } catch { return "--:--"; }
+        })();
+
+        // Filter to agents that actually have output
+        const activeAgents = AGENT_DEFS.filter(a => getAgentOutput(a.key).trim().length > 0);
+
+        return (
+            <Animated.View style={{ opacity: fadeAnim }}>
+                {/* Header */}
+                <View style={[styles.card, { borderLeftWidth: 4, borderLeftColor: "#0A84FF", marginBottom: 16 }]}>
+                    <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 6 }}>
+                        <Ionicons name="chatbubbles" size={20} color={"#0A84FF"} />
+                        <Text style={[styles.cardTitle, { marginLeft: 8, color: "#0A84FF" }]}>Agent Communication Transcript</Text>
+                    </View>
+                    <Text style={{ color: C.textSec, fontSize: 11, lineHeight: 16 }}>
+                        Full inter-agent message log from the CIRO pipeline. Each agent's raw output is displayed as a chronological conversation thread.
+                    </Text>
+                    <View style={{ flexDirection: "row", alignItems: "center", marginTop: 10, gap: 12 }}>
+                        <View style={{ flexDirection: "row", alignItems: "center", backgroundColor: C.surfaceEl, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 }}>
+                            <Ionicons name="people-outline" size={12} color={C.primary} style={{ marginRight: 4 }} />
+                            <Text style={{ color: C.primary, fontSize: 10, fontWeight: "700" }}>{activeAgents.length} Agents</Text>
+                        </View>
+                        <View style={{ flexDirection: "row", alignItems: "center", backgroundColor: C.surfaceEl, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 }}>
+                            <Ionicons name="time-outline" size={12} color={C.textSec} style={{ marginRight: 4 }} />
+                            <Text style={{ color: C.textSec, fontSize: 10, fontWeight: "700" }}>{displayTime}</Text>
+                        </View>
+                    </View>
+                </View>
+
+                {/* Agent Messages */}
+                {activeAgents.map((agent, idx) => {
+                    const rawText = getAgentOutput(agent.key);
+                    const cleanedText = formatTextForUI(rawText);
+                    // Trim to a reasonable display length
+                    const displayText = cleanedText.length > 1200 ? cleanedText.substring(0, 1200) + "\n\n... [truncated]" : cleanedText;
+
+                    return (
+                        <View key={agent.key} style={{ marginBottom: 16 }}>
+                            {/* Agent header row */}
+                            <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 8, paddingLeft: 4 }}>
+                                {/* Avatar */}
+                                <View style={{
+                                    width: 40, height: 40, borderRadius: 20,
+                                    backgroundColor: agent.color + "18",
+                                    borderWidth: 2, borderColor: agent.color + "55",
+                                    alignItems: "center", justifyContent: "center",
+                                    marginRight: 10,
+                                }}>
+                                    <Ionicons name={agent.icon as any} size={18} color={agent.color} />
+                                </View>
+                                {/* Name + role */}
+                                <View style={{ flex: 1 }}>
+                                    <Text style={{ color: C.text, fontSize: 13, fontWeight: "800" }}>{agent.name}</Text>
+                                    <Text style={{ color: agent.color, fontSize: 9, fontWeight: "600", letterSpacing: 0.3, marginTop: 1 }}>{agent.role}</Text>
+                                </View>
+                                {/* Sequence badge */}
+                                <View style={{ backgroundColor: agent.color + "15", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10, borderWidth: 1, borderColor: agent.color + "33" }}>
+                                    <Text style={{ color: agent.color, fontSize: 8, fontWeight: "800" }}>#{idx + 1}</Text>
+                                </View>
+                            </View>
+
+                            {/* Message bubble */}
+                            <View style={{
+                                backgroundColor: C.surface,
+                                borderRadius: 14,
+                                borderTopLeftRadius: 4,
+                                padding: 14,
+                                marginLeft: 20,
+                                borderWidth: 1,
+                                borderColor: agent.color + "33",
+                                borderLeftWidth: 3,
+                                borderLeftColor: agent.color,
+                            }}>
+                                <Text style={{ color: C.text, fontSize: 11.5, lineHeight: 18 }}>{displayText}</Text>
+                                {/* Timestamp footer */}
+                                <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "flex-end", marginTop: 10, paddingTop: 8, borderTopWidth: 1, borderTopColor: C.border }}>
+                                    <Ionicons name="checkmark-done-outline" size={12} color={agent.color} style={{ marginRight: 4 }} />
+                                    <Text style={{ color: C.textSec, fontSize: 9, fontWeight: "600" }}>{displayTime}</Text>
+                                </View>
+                            </View>
+
+                            {/* Connector line between messages */}
+                            {idx < activeAgents.length - 1 && (
+                                <View style={{ alignItems: "center", marginTop: 4, marginBottom: -8 }}>
+                                    <View style={{ width: 1, height: 16, backgroundColor: C.border }} />
+                                    <Ionicons name="chevron-down" size={12} color={C.textSec} />
+                                </View>
+                            )}
+                        </View>
+                    );
+                })}
+
+                {activeAgents.length === 0 && (
+                    <View style={[styles.card, { alignItems: "center", paddingVertical: 40 }]}>
+                        <Ionicons name="chatbubbles-outline" size={40} color={C.textSec} />
+                        <Text style={{ color: C.textSec, fontSize: 13, marginTop: 12, fontStyle: "italic" }}>No agent communications recorded for this session.</Text>
+                    </View>
+                )}
+
+                {/* Pipeline Execution Timeline from agent_logs */}
+                {agentLogs.length > 0 && (
+                    <View style={[styles.card, { marginTop: 8 }]}>
+                        <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 12 }}>
+                            <Ionicons name="git-branch-outline" size={18} color={C.primary} />
+                            <Text style={[styles.cardTitle, { marginLeft: 8 }]}>Pipeline Execution Timeline</Text>
+                        </View>
+                        <Text style={{ color: C.textSec, fontSize: 10, marginBottom: 14, fontStyle: "italic" }}>
+                            Chronological log of agent activations during the pipeline run
+                        </Text>
+                        {agentLogs.map((log: any, lIdx: number) => {
+                            const logAgent = typeof log === "string" ? log : (log.agent || log.name || "Agent");
+                            const logContent = typeof log === "string" ? log : (log.content || log.message || log.text || JSON.stringify(log));
+                            const logTime = typeof log === "object" && log.timestamp
+                                ? (() => { try { return new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }); } catch { return "--:--"; } })()
+                                : displayTime;
+                            // Pick color from agent defs if possible
+                            const matchedAgent = AGENT_DEFS.find(a => logAgent.toLowerCase().includes(a.name.split(" ")[0].toLowerCase()));
+                            const dotColor = matchedAgent?.color || C.info;
+
+                            return (
+                                <View key={lIdx} style={{ flexDirection: "row", alignItems: "flex-start", marginBottom: 12, paddingLeft: 4 }}>
+                                    {/* Timeline dot + line */}
+                                    <View style={{ alignItems: "center", marginRight: 12, width: 16 }}>
+                                        <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: dotColor, borderWidth: 2, borderColor: dotColor + "44" }} />
+                                        {lIdx < agentLogs.length - 1 && (
+                                            <View style={{ width: 1, height: 30, backgroundColor: C.border, marginTop: 2 }} />
+                                        )}
+                                    </View>
+                                    {/* Content */}
+                                    <View style={{ flex: 1, backgroundColor: C.surfaceEl, borderRadius: 8, padding: 10, borderWidth: 1, borderColor: C.border }}>
+                                        <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                                            <Text style={{ color: C.text, fontSize: 11, fontWeight: "700" }}>{logAgent}</Text>
+                                            <Text style={{ color: C.textSec, fontSize: 8, fontWeight: "600", fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}>{logTime}</Text>
+                                        </View>
+                                        <Text style={{ color: C.textSec, fontSize: 10, lineHeight: 15 }} numberOfLines={3}>
+                                            {typeof logContent === "string" ? logContent.replace(/__[A-Z_]+__/g, "").replace(/\*\*/g, "").trim() : String(logContent)}
+                                        </Text>
+                                    </View>
+                                </View>
+                            );
+                        })}
+                    </View>
+                )}
+            </Animated.View>
+        );
+    };
+
     const duration = report.pipeline_duration_seconds || 0;
 
     const borderColorInterp = pulseBorderAnim.interpolate({
@@ -2844,14 +3049,15 @@ export default function ResultScreen({ route, navigation }: any) {
             {/* Content */}
             <ScrollView style={styles.scrollArea} contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
                 {tab === 0 && renderOverview()}
-                {tab === 1 && renderMap()}
+                {tab === 1 && renderAgentComms()}
                 {tab === 2 && renderActionPlan()}
-                {tab === 3 && renderCouncil()}
-                {tab === 4 && renderSimulation()}
-                {tab === 5 && renderStakeholders()}
-                {tab === 6 && renderTicket()}
-                {tab === 7 && renderResources()}
-                {tab === 8 && renderImpact()}
+                {tab === 3 && renderMap()}
+                {tab === 4 && renderCouncil()}
+                {tab === 5 && renderSimulation()}
+                {tab === 6 && renderStakeholders()}
+                {tab === 7 && renderTicket()}
+                {tab === 8 && renderResources()}
+                {tab === 9 && renderImpact()}
             </ScrollView>
 
             {/* Outcome Rating Modal */}

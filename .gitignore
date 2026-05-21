@@ -17,3 +17,12 @@ __pycache__/
 # Local Copilot/Claude workspace settings
 .claude/
 
+# Large trace archives that should not be committed
+antigravity_project_traces.zip
+ciro/antigravity_traces.zip
+ciro/antigravity_logs/
+ciro/antigravity_traces/
+ciro/antigravity_logs.docx
+ciro/ciro.rar
+ciro/~$tigravity_logs.docx
+

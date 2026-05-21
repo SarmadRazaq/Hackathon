@@ -4,7 +4,7 @@ import {
     Dimensions, ActivityIndicator, Platform, SafeAreaView, FlatList
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
-import MapView, { Marker, Circle, UrlTile } from "react-native-maps";
+import HotspotMap from "../components/HotspotMap";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { collection, query, orderBy, onSnapshot } from "firebase/firestore";
@@ -240,48 +240,21 @@ export default function PublicDashboardScreen({ navigation }: any) {
                 </View>
 
                 <View style={styles.mapContainer}>
-                    <MapView
-                        style={styles.miniMap}
-                        mapType={Platform.OS === "android" ? "none" : "standard"}
-                        initialRegion={{
-                            latitude: 30.3753,
-                            longitude: 69.3451,
-                            latitudeDelta: 12,
-                            longitudeDelta: 12,
-                        }}
-                        customMapStyle={DARK_MAP_STYLE}
-                        scrollEnabled={false}
-                        zoomEnabled={false}
-                        pitchEnabled={false}
-                        rotateEnabled={false}
-                    >
-                        <UrlTile
-                            urlTemplate="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-                                                     shouldReplaceMapContent={true}
-                            maximumZ={19}
-                            tileSize={256}
-                        />
-                        {crises.map((c) => {
+                    <HotspotMap
+                        markers={crises.map((c) => {
                             const coords = getCoordinates(c);
-                            const color = SEVERITY_COLORS[c.severity] || COLORS.danger;
-                            return (
-                                <React.Fragment key={c.id}>
-                                    <Marker coordinate={coords}>
-                                        <View style={[styles.miniMarker, { borderColor: color }]}>
-                                            <Text style={{ fontSize: 10 }}>{getCrisisEmoji(c.type)}</Text>
-                                        </View>
-                                    </Marker>
-                                    <Circle
-                                        center={coords}
-                                        radius={30000}
-                                        fillColor={`${color}12`}
-                                        strokeColor={`${color}30`}
-                                        strokeWidth={1}
-                                    />
-                                </React.Fragment>
-                            );
+                            return {
+                                id: c.id,
+                                lat: coords.latitude,
+                                lng: coords.longitude,
+                                severity: c.severity,
+                                title: c.title || c.type,
+                                emoji: getCrisisEmoji(c.type),
+                            };
                         })}
-                    </MapView>
+                        height={200}
+                        interactive={false}
+                    />
                     <TouchableOpacity
                         style={styles.expandMapBtn}
                         onPress={() => {
